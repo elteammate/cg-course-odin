@@ -8,15 +8,8 @@ import "core:os"
 import "core:math"
 import "core:math/linalg"
 
-import glew "../glew"
 import gl "vendor:OpenGL"
 import sdl "vendor:sdl2"
-
-glew_fail :: proc(msg: string, err: gl.GL_Enum) -> string {
-    return strings.concatenate({
-        "GLEW Error (", msg, "): ", string(glew.GetErrorString(err))
-    })
-}
 
 sdl2_fail :: proc(msg: string) -> string {
     return strings.concatenate({
