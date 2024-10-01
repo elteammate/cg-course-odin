@@ -125,8 +125,25 @@ application :: proc() -> Maybe(string) {
     view_location := gl.GetUniformLocation(program, "view")
     projection_location := gl.GetUniformLocation(program, "projection")
 
-    bunny_data, obj_parsing_err := parse_obj("practice4/bunny.obj")
+    obj_data, obj_parsing_err := parse_obj("practice4/bunny.obj")
     if err, has_err := obj_parsing_err.?; has_err do return err
+
+    vao, vbo, ebo: u32
+
+    gl.GenVertexArrays(1, &vao)
+    gl.GenBuffers(1, &vbo)
+    gl.GenBuffers(1, &ebo)
+
+    gl.BindVertexArray(vao)
+    gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
+    gl.BufferData(gl.ARRAY_BUFFER, len(obj_data.vertices) * size_of(Vertex), raw_data(obj_data.vertices), gl.STATIC_DRAW)
+    gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo)
+    gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(obj_data.indices) * 4, raw_data(obj_data.indices), gl.STATIC_DRAW)
+
+    for attr in u32(0)..<3 do gl.EnableVertexAttribArray(attr)
+    gl.VertexAttribPointer(0, 3, gl.FLOAT, false, size_of(Vertex), 0)
+    gl.VertexAttribPointer(1, 3, gl.FLOAT, false, size_of(Vertex), 12)
+    gl.VertexAttribPointer(2, 2, gl.FLOAT, false, size_of(Vertex), 24)
 
     last_frame_start := sdl.GetTicks()
     time: f32 = 0.0
@@ -161,11 +178,18 @@ application :: proc() -> Maybe(string) {
 
         gl.Clear(gl.COLOR_BUFFER_BIT)
 
+        angle := time / 1000.0
+
         model := matrix[4, 4]f32{
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
+            0.5, 0.0, 0.0, 0.0,
+            0.0, 0.5, 0.0, 0.0,
+            0.0, 0.0, 0.5, 0.0,
             0.0, 0.0, 0.0, 1.0, 
+        } * matrix[4, 4]f32{
+            math.cos(angle), 0.0, math.sin(angle), 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            -math.sin(angle), 0.0, math.cos(angle), 0.0,
+            0.0, 0.0, 0.0, 1.0,
         }
 
         view := matrix[4, 4]f32{
@@ -189,6 +213,9 @@ application :: proc() -> Maybe(string) {
         gl.UniformMatrix4fv(view_location, 1, true, raw_data(view_flat[:]))
         gl.UniformMatrix4fv(model_location, 1, true, raw_data(model_flat[:]))
         gl.UniformMatrix4fv(projection_location, 1, true, raw_data(projection_flat[:]))
+
+        gl.BindVertexArray(vao)
+        gl.DrawElements(gl.TRIANGLES, cast(i32)len(obj_data.indices), gl.UNSIGNED_INT, nil)
 
         sdl.GL_SwapWindow(window)
     }
