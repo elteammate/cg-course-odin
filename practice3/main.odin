@@ -89,8 +89,7 @@ bezier :: proc(vertices: []Vertex, t: f32) -> [2]f32 {
 
     for k in 0..<(len(vertices) - 1) {
         for i in 0..<(len(vertices) - k - 1) {
-            points[i][0] = points[i][0] * (1.0 - t) + points[i+1][0] * t
-            points[i][1] = points[i][1] * (1.0 - t) + points[i+1][1] * t
+            points[i] = points[i] * (1.0 - t) + points[i+1] * t
         }
     }
     return points[0]
@@ -107,7 +106,7 @@ update_curve_vertices :: proc(vertices: []Vertex, curve_vertices: ^[dynamic]Curv
     for i in 0..=count {
         t := cast(f32)i / cast(f32)count
         p := bezier(vertices, t)
-        dist += math.hypot_f32(p[0] - last_p[0], p[1] - last_p[1])
+        dist += math.hypot_f32(p.x - last_p.x, p.y - last_p.y)
         curve_vertex := CurveVertex{
             position = p,
             color = [4]u8{255, 0, 0, 255},
