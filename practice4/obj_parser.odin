@@ -100,9 +100,7 @@ parse_obj :: proc(path: string) -> (result: ObjData, error: Maybe(string)) {
             }
 
             for j := 1; j + 1 < len(vertices); j += 1 {
-                append(&result.indices, vertices[0])
-                append(&result.indices, vertices[j])
-                append(&result.indices, vertices[j + 1])
+                append(&result.indices, vertices[0], vertices[j], vertices[j + 1])
             }
         }
     }

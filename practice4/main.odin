@@ -6,6 +6,7 @@ import "core:strings"
 import "core:c"
 import "core:os"
 import "core:math"
+import "core:math/linalg"
 
 import glew "../glew"
 import gl "vendor:OpenGL"
@@ -103,10 +104,13 @@ application :: proc() -> Maybe(string) {
     if ctx == nil do return sdl2_fail("sdl.GL_CreateContext")
     defer sdl.GL_DeleteContext(ctx)
 
-    sdl.GL_SetSwapInterval(0)
+    sdl.GL_SetSwapInterval(1)
 
     gl.load_up_to(3, 3, sdl.gl_set_proc_address)
 
+    gl.Enable(gl.DEPTH_TEST)
+    gl.Enable(gl.CULL_FACE)
+    // gl.CullFace(gl.FRONT)
     gl.ClearColor(0.1, 0.1, 0.2, 0.0)
 
     vertex_source_bytes, vert_file_read_ok := os.read_entire_file("practice4/vertex.glsl")
@@ -120,6 +124,7 @@ application :: proc() -> Maybe(string) {
     })
     if err, has_err := err.?; has_err do return err
     gl.UseProgram(program)
+    defer gl.DeleteProgram(program)
 
     model_location := gl.GetUniformLocation(program, "model")
     view_location := gl.GetUniformLocation(program, "view")
@@ -129,7 +134,6 @@ application :: proc() -> Maybe(string) {
     if err, has_err := obj_parsing_err.?; has_err do return err
 
     vao, vbo, ebo: u32
-
     gl.GenVertexArrays(1, &vao)
     gl.GenBuffers(1, &vbo)
     gl.GenBuffers(1, &ebo)
@@ -141,25 +145,91 @@ application :: proc() -> Maybe(string) {
     gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(obj_data.indices) * 4, raw_data(obj_data.indices), gl.STATIC_DRAW)
 
     for attr in u32(0)..<3 do gl.EnableVertexAttribArray(attr)
-    gl.VertexAttribPointer(0, 3, gl.FLOAT, false, size_of(Vertex), 0)
-    gl.VertexAttribPointer(1, 3, gl.FLOAT, false, size_of(Vertex), 12)
-    gl.VertexAttribPointer(2, 2, gl.FLOAT, false, size_of(Vertex), 24)
+    gl.VertexAttribPointer(0, 3, gl.FLOAT, false, size_of(Vertex), offset_of(Vertex, position)) 
+    gl.VertexAttribPointer(1, 3, gl.FLOAT, false, size_of(Vertex), offset_of(Vertex, normal))
+    gl.VertexAttribPointer(2, 2, gl.FLOAT, false, size_of(Vertex), offset_of(Vertex, texcoord))
 
     last_frame_start := sdl.GetTicks()
     time: f32 = 0.0
     button_down: map[sdl.Keycode]bool
     running := true
 
+    Object :: struct {
+        position: [3]f32,
+        move_speed: [2]f32,
+        vao: u32,
+        rotation_speed: f32,
+        rotation_axis: u32,
+        rotation_angle: f32,
+        scale: f32,
+    }
+
+    objects := [?]Object{
+        {
+            position = {0, 0, 0},
+            move_speed = {1.0, 1.0},
+            vao = vao,
+            rotation_speed = 0.7,
+            rotation_axis = 1,
+            scale = 0.5,
+        },
+        {
+            position = {1.0, 1.0, -3},
+            move_speed = {0.7, 1.5},
+            vao = vao,
+            rotation_speed = 20.0,
+            rotation_axis = 0,
+            scale = 0.3,
+        },
+        {
+            position = {-0.4, 0.1, -1.5},
+            move_speed = {-0.3, -0.6},
+            vao = vao,
+            rotation_speed = 0.4,
+            rotation_axis = 2,
+            scale = 0.6,
+        },
+    }
+
+    rotation_matrix :: proc(axis: u32, angle: f32) -> matrix[4, 4]f32 {
+        cos := math.cos(angle)
+        sin := math.sin(angle)
+        switch axis {
+            case 0:
+                return matrix[4, 4]f32{
+                    1, 0, 0, 0,
+                    0, cos, -sin, 0,
+                    0, sin, cos, 0,
+                    0, 0, 0, 1,
+                }
+            case 1:
+                return matrix[4, 4]f32{
+                    cos, 0, sin, 0,
+                    0, 1, 0, 0,
+                    -sin, 0, cos, 0,
+                    0, 0, 0, 1,
+                }
+            case 2:
+                return matrix[4, 4]f32{
+                    cos, -sin, 0, 0,
+                    sin, cos, 0, 0,
+                    0, 0, 1, 0,
+                    0, 0, 0, 1,
+                }
+        }
+        unreachable()
+    }
+
     for running {
-        for event: sdl.Event = ---; sdl.PollEvent(&event); {
+        for event: sdl.Event; sdl.PollEvent(&event); {
             #partial switch event.type {
                 case .QUIT:
                     running = false
                 case .WINDOWEVENT:
                     #partial switch event.window.event {
                         case .RESIZED:
-                            width := event.window.data1
-                            height := event.window.data2
+                            width = event.window.data1
+                            height = event.window.data2
                             gl.Viewport(0, 0, width, height)
                     }
                 case .KEYDOWN:
@@ -173,49 +243,71 @@ application :: proc() -> Maybe(string) {
 
         now := sdl.GetTicks()
         dt := cast(f32)(now - last_frame_start) / 1000.0
-        last_frame_start := now
+        last_frame_start = now
         time += dt
 
-        gl.Clear(gl.COLOR_BUFFER_BIT)
+        gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
-        angle := time / 1000.0
-
-        model := matrix[4, 4]f32{
-            0.5, 0.0, 0.0, 0.0,
-            0.0, 0.5, 0.0, 0.0,
-            0.0, 0.0, 0.5, 0.0,
-            0.0, 0.0, 0.0, 1.0, 
-        } * matrix[4, 4]f32{
-            math.cos(angle), 0.0, math.sin(angle), 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            -math.sin(angle), 0.0, math.cos(angle), 0.0,
-            0.0, 0.0, 0.0, 1.0,
-        }
+        cam_position: = [3]f32{0, 0, 2}
 
         view := matrix[4, 4]f32{
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0, 1.0, 
+            1, 0, 0, -cam_position.x,
+            0, 1, 0, -cam_position.y,
+            0, 0, 1, -cam_position.z,
+            0, 0, 0, 1, 
         }
+
+        near: f32 = 0.01
+        far: f32 = 100
+        fov: f32 = 60 * math.RAD_PER_DEG
+        right := math.tan(fov / 2) * near
+        aspect_ratio := f32(width) / f32(height)
+        top := right / aspect_ratio
 
         projection := matrix[4, 4]f32{
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0, 1.0, 
+            near / right, 0, 0, 0,
+            0, near / top, 0, 0,
+            0, 0, -(far + near) / (far - near), -2 * far * near / (far - near),
+            0, 0, -1, 0, 
         }
+        // projection := matrix[4, 4]f32{
+        //     1, 0, 0, 0,
+        //     0, 1, 0, 0,
+        //     0, 0, 1, 0,
+        //     0, 0, 0, 1, 
+        // }
 
-        model_flat := intrinsics.matrix_flatten(model)
-        view_flat := intrinsics.matrix_flatten(view)
-        projection_flat := intrinsics.matrix_flatten(projection)
+        view_flat := linalg.matrix_flatten(view)
+        projection_flat := linalg.matrix_flatten(projection)
 
-        gl.UniformMatrix4fv(view_location, 1, true, raw_data(view_flat[:]))
-        gl.UniformMatrix4fv(model_location, 1, true, raw_data(model_flat[:]))
-        gl.UniformMatrix4fv(projection_location, 1, true, raw_data(projection_flat[:]))
+        gl.UniformMatrix4fv(view_location, 1, false, raw_data(view_flat[:]))
+        gl.UniformMatrix4fv(projection_location, 1, false, raw_data(projection_flat[:]))
 
-        gl.BindVertexArray(vao)
-        gl.DrawElements(gl.TRIANGLES, cast(i32)len(obj_data.indices), gl.UNSIGNED_INT, nil)
+        for &obj in objects {
+            if button_down[sdl.Keycode.LEFT] do obj.position.x -= dt * obj.move_speed.x 
+            if button_down[sdl.Keycode.RIGHT] do obj.position.x += dt * obj.move_speed.x
+            if button_down[sdl.Keycode.UP] do obj.position.y += dt * obj.move_speed.y
+            if button_down[sdl.Keycode.DOWN] do obj.position.y -= dt * obj.move_speed.y
+
+            obj.rotation_angle += dt * obj.rotation_speed
+
+            model := matrix[4, 4]f32{
+                1, 0, 0, obj.position.x,
+                0, 1, 0, obj.position.y,
+                0, 0, 1, obj.position.z,
+                0, 0, 0, 1,
+            } * matrix[4, 4]f32{
+                obj.scale, 0, 0, 0,
+                0, obj.scale, 0, 0,
+                0, 0, obj.scale, 0,
+                0, 0, 0, 1, 
+            } * rotation_matrix(obj.rotation_axis, obj.rotation_angle)
+            model_flat := linalg.matrix_flatten(model)
+
+            gl.BindVertexArray(vao)
+            gl.UniformMatrix4fv(model_location, 1, false, raw_data(model_flat[:]))
+            gl.DrawElements(gl.TRIANGLES, cast(i32)len(obj_data.indices), gl.UNSIGNED_INT, nil)
+        }
 
         sdl.GL_SwapWindow(window)
     }
