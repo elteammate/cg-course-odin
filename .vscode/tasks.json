@@ -13,7 +13,7 @@
                 "source": "odin",
                 "severity": "error",
                 "pattern": {
-                    "regexp": "^(.+\\.odin)\\((\\d+)\\:(\\d+)\\) (.+?): (.+)$",
+                    "regexp": "^(.+\\.odin)\\((\\d+)\\:(\\d+)\\) (.+?:)? (.+)$",
                     "file": 1,
                     "line": 2,
                     "column": 3,
@@ -34,11 +34,11 @@
                 "source": "odin",
                 "severity": "error",
                 "pattern": {
-                    "regexp": "^(.+\\.odin)\\((\\d+)\\:(\\d+)\\) (.+?): (.+)$",
+                    "regexp": "^(.+\\.odin)\\((\\d+)\\:(\\d+)\\) (.+?:)? (.+)$",
                     "file": 1,
                     "line": 2,
                     "column": 3,
-                    "message": 5,
+                    "message": 6,
                 }
             },
             "presentation": {
