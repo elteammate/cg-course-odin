@@ -1,0 +1,49 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "odin: Run This",
+            "type": "shell",
+            "command": "odin run ${fileDirname}",
+            "problemMatcher": {
+                "owner": "odin",
+                "fileLocation": "absolute",
+                "source": "odin",
+                "severity": "error",
+                "pattern": {
+                    "regexp": "^(.+\\.odin)\\((\\d+)\\:(\\d+)\\) (.+?): (.+)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "message": 5,
+                }
+            },
+            "presentation": {
+                "clear": true,
+            },
+        },
+        {
+            "label": "odin: Run Root",
+            "type": "shell",
+            "command": "odin run ${workspaceFolder}",
+            "problemMatcher": {
+                "owner": "odin",
+                "fileLocation": "absolute",
+                "source": "odin",
+                "severity": "error",
+                "pattern": {
+                    "regexp": "^(.+\\.odin)\\((\\d+)\\:(\\d+)\\) (.+?): (.+)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "message": 5,
+                }
+            },
+            "presentation": {
+                "clear": true,
+            },
+        },
+    ]
+}
