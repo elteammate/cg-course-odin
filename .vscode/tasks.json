@@ -6,7 +6,49 @@
         {
             "label": "odin: Run This",
             "type": "shell",
-            "command": "odin run ${fileDirname}",
+            "command": "odin run ${fileDirname} -debug",
+            "problemMatcher": {
+                "owner": "odin",
+                "fileLocation": "absolute",
+                "source": "odin",
+                "severity": "error",
+                "pattern": {
+                    "regexp": "^(.+\\.odin)\\((\\d+)\\:(\\d+)\\) (.+?:)? (.+)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "message": 5,
+                }
+            },
+            "presentation": {
+                "clear": true,
+            },
+        },
+        {
+            "label": "odin: Run Homework1",
+            "type": "shell",
+            "command": "odin run homework1 -debug",
+            "problemMatcher": {
+                "owner": "odin",
+                "fileLocation": "absolute",
+                "source": "odin",
+                "severity": "error",
+                "pattern": {
+                    "regexp": "^(.+\\.odin)\\((\\d+)\\:(\\d+)\\) (.+?:)? (.+)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "message": 5,
+                }
+            },
+            "presentation": {
+                "clear": true,
+            },
+        },
+        {
+            "label": "odin: Run This and Sanitize",
+            "type": "shell",
+            "command": "odin run ${fileDirname} -sanitize:memory -debug",
             "problemMatcher": {
                 "owner": "odin",
                 "fileLocation": "absolute",
@@ -27,7 +69,7 @@
         {
             "label": "odin: Run Root",
             "type": "shell",
-            "command": "odin run ${workspaceFolder}",
+            "command": "odin run ${workspaceFolder} -debug",
             "problemMatcher": {
                 "owner": "odin",
                 "fileLocation": "absolute",
