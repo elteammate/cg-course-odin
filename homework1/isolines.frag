@@ -1,9 +1,9 @@
 #version 330 core
 
+uniform vec3 color;
 uniform vec2 cutoff_low;
 uniform vec2 cutoff_high;
 
-in vec3 color;
 in vec2 pos;
 
 layout (location = 0) out vec4 out_color;

@@ -10,8 +10,10 @@ uniform float high_value;
 uniform mat4 view;
 
 out vec3 color;
+out vec2 pos;
 
 void main() {
+    pos = position;
     gl_Position = view * vec4(position, 0.0, 1.0);
     float t = (value - low_value) / (high_value - low_value);
     color = low_color + (high_color - low_color) * t;
