@@ -89,8 +89,8 @@ function :: proc(x, y, t: f32) -> f32 {
 
     for i in 0..<iters {
         v, g := perlin(i, x * cur_scale, y * cur_scale, t)
-        value += v * cur_factor
         grad += g * cur_factor
+        value += v * cur_factor * math.exp(-(grad.x * grad.x + grad.y * grad.y))
         cur_scale *= scale
         cur_factor *= factor
     }
@@ -431,7 +431,7 @@ application :: proc() -> Maybe(string) {
                             grid_nodes_per_unit = 20.0
                             units_per_pixel = 0.01
                             should_update_grid = true
-                        case .Q: if isoline_count > 1 do isoline_count -= 1
+                        case .Q: if isoline_count > 0 do isoline_count -= 1
                         case .E: if isoline_count < MAX_ISOLINES do isoline_count += 1
                         case .Z: 
                             grid_nodes_per_unit *= 1.1
@@ -716,6 +716,8 @@ application :: proc() -> Maybe(string) {
 
             lowest_isoline_index := int(math.floor((mn - isolines_low) / isoline_height) + 1)
             high_isoline_index := int(math.ceil((mx - isolines_low) / isoline_height) - 1)
+            lowest_isoline_index = max(lowest_isoline_index, 0)
+            high_isoline_index = min(high_isoline_index, MAX_ISOLINES - 1)
 
             if high_isoline_index < lowest_isoline_index do return
             edge := edge_between(size, x_pos, y_pos)
@@ -780,12 +782,10 @@ application :: proc() -> Maybe(string) {
 
         gl.UseProgram(graph_program)
         gl.BindVertexArray(graph_vao)
-        gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, graph_indices_buffer)
         gl.DrawElements(gl.TRIANGLE_STRIP, cast(i32)len(graph_grid_indices), gl.UNSIGNED_INT, nil)
 
         gl.UseProgram(isolines_program)
         gl.BindVertexArray(isolines_vao)
-        gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, isolines_indices_buffer)
         gl.DrawElements(gl.LINE_STRIP, cast(i32)len(isoline_indices), gl.UNSIGNED_INT, nil)
 
         sdl.GL_SwapWindow(window)
