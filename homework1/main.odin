@@ -270,7 +270,7 @@ application :: proc() -> Maybe(string) {
     sdl.GL_SetAttribute(sdl.GLattr.MULTISAMPLESAMPLES, 4)
 
     window := sdl.CreateWindow(
-        "Graphics course practice 4",
+        "Graphics course homework 1",
         sdl.WINDOWPOS_CENTERED,
         sdl.WINDOWPOS_CENTERED,
         800, 600,
