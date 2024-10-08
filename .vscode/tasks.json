@@ -25,6 +25,27 @@
             },
         },
         {
+            "label": "odin: Run This (optimized)",
+            "type": "shell",
+            "command": "odin run ${fileDirname} -o:aggressive",
+            "problemMatcher": {
+                "owner": "odin",
+                "fileLocation": "absolute",
+                "source": "odin",
+                "severity": "error",
+                "pattern": {
+                    "regexp": "^(.+\\.odin)\\((\\d+)\\:(\\d+)\\) (.+?:)? (.+)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "message": 5,
+                }
+            },
+            "presentation": {
+                "clear": true,
+            },
+        },
+        {
             "label": "odin: Test This",
             "type": "shell",
             "command": "odin test ${fileDirname} -debug",
@@ -90,7 +111,7 @@
         {
             "label": "odin: Run This and Sanitize",
             "type": "shell",
-            "command": "odin run ${fileDirname} -sanitize:memory -debug",
+            "command": "odin run ${fileDirname} -sanitize:address -debug -o:none",
             "problemMatcher": {
                 "owner": "odin",
                 "fileLocation": "absolute",

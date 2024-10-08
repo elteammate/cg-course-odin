@@ -28,9 +28,9 @@ compile_shader :: proc(source: string, type: gl.GL_Enum) -> (u32, Maybe(string))
     lengths := []i32 {cast(i32)len(source)}
     gl.ShaderSource(shader, 1, raw_data(sources), raw_data(lengths))
     gl.CompileShader(shader)
-    compile_status: gl.GL_Enum = ---
-    gl.GetShaderiv(shader, gl.COMPILE_STATUS, cast([^]i32)&compile_status)
-    if (compile_status != .TRUE) {
+    compile_status: i32 = ---
+    gl.GetShaderiv(shader, gl.COMPILE_STATUS, &compile_status)
+    if (compile_status != 1) {
         infolog_size: i32 = ---
         gl.GetShaderiv(shader, gl.INFO_LOG_LENGTH, &infolog_size)
         infolog := make([]u8, infolog_size)
@@ -108,8 +108,10 @@ application :: proc() -> Maybe(string) {
 
     vertex_source_bytes, vert_file_read_ok := os.read_entire_file("practice4/vertex.glsl")
     if !vert_file_read_ok do return "Failed to read vertex shader source"
+    defer delete(vertex_source_bytes)
     fragment_source_bytes, frag_file_read_ok := os.read_entire_file("practice4/fragment.glsl")
     if !frag_file_read_ok do return "Failed to read fragment shader source"
+    defer delete(fragment_source_bytes)
 
     program, err := compile_shader_program(shader_program_info{
         vertex = string(vertex_source_bytes),
@@ -125,6 +127,8 @@ application :: proc() -> Maybe(string) {
 
     obj_data, obj_parsing_err := parse_obj("practice4/bunny.obj")
     if err, has_err := obj_parsing_err.?; has_err do return err
+    defer delete(obj_data.vertices)
+    defer delete(obj_data.indices)
 
     vao, vbo, ebo: u32
     gl.GenVertexArrays(1, &vao)

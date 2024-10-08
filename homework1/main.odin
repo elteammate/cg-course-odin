@@ -15,7 +15,10 @@ import sdl "vendor:sdl2"
 import common "../common"
 
 hash :: proc(seed: u32, i, j: i32) -> u32 {
-    return u32(i) * 601486597 + u32(j) * 1302311863 + seed * 1182399403
+    i, j := u32(i), u32(j)
+    i ~= i << 13
+    j ~= j << 17
+    return i * 601486597 + j * 1302311863 + seed * 1182399403
 }
 
 perlin :: proc(seed: u32, x, y, t: f32) -> (value: f32, grad: [2]f32) {
@@ -42,7 +45,16 @@ perlin :: proc(seed: u32, x, y, t: f32) -> (value: f32, grad: [2]f32) {
     speed11 := f32(raw_speed11) / 2e5
 
     zip2 :: proc(a, b: f32) -> [2]f32 { return {a, b} }
-    interpolate :: proc(a, b: f32, t: f32) -> f32 { return (b - a) * (3 - t * 2) * t * t + a }
+    interpolate :: proc(a: f32, a_grad: [2]f32, b: f32, b_grad: [2]f32, t: f32, t_grad: [2]f32) -> (f32, [2]f32) {
+        b_minus_a, b_minus_a_grad := b - a, b_grad - a_grad
+        t2 := t * t
+        t3 := t2 * t
+        t4 := t3 * t
+        t5 := t4 * t
+        t_poly, t_poly_grad := 6 * t5 - 15 * t4 + 10 * t3, (30 * t4 - 60 * t3 + 30 * t2) * t_grad
+        mul, mul_grad := b_minus_a * t_poly, b_minus_a_grad * t_poly + b_minus_a * t_poly_grad
+        return a + mul, a_grad + mul_grad
+    }
 
     g00 := zip2(math.sincos(speed00 * t + f32(val00)))
     g01 := zip2(math.sincos(speed01 * t + f32(val01)))
@@ -54,22 +66,34 @@ perlin :: proc(seed: u32, x, y, t: f32) -> (value: f32, grad: [2]f32) {
     d10 := linalg.dot(g10, [2]f32{1 - p.x, -p.y})
     d11 := linalg.dot(g11, [2]f32{1 - p.x, 1 - p.y})
 
-    d00_grad := g00
-    d01_grad := [2]f32{g01.x, -g01.y}
-    d10_grad := [2]f32{-g10.x, g10.y}
+    d00_grad := [2]f32{-g00.x, -g00.y}
+    d01_grad := [2]f32{-g01.x, -g01.y}
+    d10_grad := [2]f32{-g10.x, -g10.y}
     d11_grad := [2]f32{-g11.x, -g11.y}
 
-    value = interpolate(
-        interpolate(d00, d10, p.x),
-        interpolate(d01, d11, p.x),
-        p.y,
+    return interpolate(
+        interpolate(d00, d00_grad, d10, d10_grad, p.x, {1, 0}),
+        interpolate(d01, d01_grad, d11, d11_grad, p.x, {1, 0}),
+        p.y, {0, 1},
     )
-
-    return
 }
 
 function :: proc(x, y, t: f32) -> f32 {
-    value, grad := perlin(0, x, y, t)
+    iters: u32 : 3
+    value: f32 = 0
+    grad := [2]f32{0, 0}
+    scale: f32: 2
+    factor: f32: 0.5
+    cur_scale: f32 = 1
+    cur_factor: f32 = 1
+
+    for i in 0..<iters {
+        v, g := perlin(i, x * cur_scale, y * cur_scale, t)
+        value += v * cur_factor
+        grad += g * cur_factor
+        cur_scale *= scale
+        cur_factor *= factor
+    }
     return value
 }
 
@@ -269,7 +293,7 @@ application :: proc() -> Maybe(string) {
     gl.Enable(gl.PRIMITIVE_RESTART)
     gl.PrimitiveRestartIndex(RESTART_INDEX)
     gl.CullFace(gl.BACK)
-    gl.LineWidth(2.0)
+    gl.LineWidth(1.0)
     gl.ClearColor(0.1, 0.0, 0.2, 1.0)
 
     graph_program_shaders := common.compile_shader_program({
@@ -290,7 +314,7 @@ application :: proc() -> Maybe(string) {
     }, graph_program)
     gl.UseProgram(graph_program)
     gl.Uniform3f(graph_uniforms.low_color, 0/255.0, 0/255.0, 40/255.0)
-    gl.Uniform3f(graph_uniforms.high_color, 255/255.0, 128/255.0, 46/255.0)
+    gl.Uniform3f(graph_uniforms.high_color, 355/255.0, 128/255.0, 46/255.0)
     gl.Uniform1f(graph_uniforms.low_value, -1.0)
     gl.Uniform1f(graph_uniforms.high_value, 1.0)
 
@@ -385,6 +409,8 @@ application :: proc() -> Maybe(string) {
 
     for !should_terminate {
         defer free_all(context.temp_allocator)
+        old_units_per_pixel := units_per_pixel
+
         for event: sdl.Event = ---; sdl.PollEvent(&event); {
             #partial switch event.type {
                 case .QUIT: should_terminate = true
@@ -400,7 +426,11 @@ application :: proc() -> Maybe(string) {
                         case .ESCAPE: should_terminate = true
                         case .TAB: fixed_size_mode = !fixed_size_mode; should_update_grid = true
                         case .SPACE: paused = !paused
-                        case .R: center = {0, 0}; should_update_grid = true
+                        case .R: 
+                            center = {0, 0}
+                            grid_nodes_per_unit = 20.0
+                            units_per_pixel = 0.01
+                            should_update_grid = true
                         case .Q: if isoline_count > 1 do isoline_count -= 1
                         case .E: if isoline_count < MAX_ISOLINES do isoline_count += 1
                         case .Z: 
@@ -418,8 +448,18 @@ application :: proc() -> Maybe(string) {
                         case .RIGHT: fallthrough
                         case .D: pressed |= {.Right}
                         case .F: logging = !logging
-                        case .C: units_per_pixel *= 1.1; should_update_grid = true
-                        case .V: units_per_pixel /= 1.1; should_update_grid = true
+                        case .C:
+                            units_per_pixel *= 1.1
+                            grid_nodes_per_unit /= 1.1
+                            should_update_grid = true
+                        case .V: 
+                            units_per_pixel /= 1.1;
+                            grid_nodes_per_unit *= 1.1
+                            should_update_grid = true
+                        case .L: fixed_size.x *= 1.1; should_update_grid = true
+                        case .J: fixed_size.x /= 1.1; should_update_grid = true
+                        case .I: fixed_size.y *= 1.1; should_update_grid = true
+                        case .K: fixed_size.y /= 1.1; should_update_grid = true
                     }
 
                 case .KEYUP:
@@ -435,7 +475,9 @@ application :: proc() -> Maybe(string) {
                     }
 
                 case .MOUSEWHEEL:
-                    units_per_pixel *= math.pow(1.1, -cast(f32)event.wheel.y)
+                    fac := math.pow(1.1, -cast(f32)event.wheel.y)
+                    units_per_pixel *= fac
+                    grid_nodes_per_unit /= fac
                     should_update_grid = true
 
                 case .MOUSEBUTTONDOWN:
@@ -488,14 +530,12 @@ application :: proc() -> Maybe(string) {
             fmt.printf("Update cascade: User control -> ")
             defer should_update_grid = false
 
-            new_grid: Grid_Info = ---
-
             screen := linalg.to_f32(dimensions)
             units_on_screen := fixed_size_mode ? fixed_size : screen * units_per_pixel
             top_left_corner := center - units_on_screen * 0.5
             top_left_grid_node := linalg.to_i32(linalg.floor(top_left_corner * grid_nodes_per_unit))
             num_grid_nodes := linalg.to_i32(linalg.ceil(units_on_screen * grid_nodes_per_unit)) + 2
-            new_grid = Grid_Info{
+            new_grid := Grid_Info{
                 top_left_grid_node,
                 num_grid_nodes,
             }
@@ -524,7 +564,7 @@ application :: proc() -> Maybe(string) {
             }
 
             // Recompute the grid nodes if the grid has changed (shifted, scaled, etc.)
-            if grid != new_grid {
+            if grid != new_grid || old_units_per_pixel != units_per_pixel {
                 fmt.printf("Grid params change -> ")
                 defer grid = new_grid
 
@@ -616,7 +656,7 @@ application :: proc() -> Maybe(string) {
                 x, y := nodes[cont.begin], nodes[cont.end]
                 fx, fy := values[cont.begin], values[cont.end]
                 t := (value - fx) / (fy - fx)
-                // assert(t >= 0 && t <= 1)
+                // assert(t >= -1e-5 && t <= 1 + 1e-5)
                 append(indices, cast(u32)len(positions))
                 append(positions, linalg.lerp(x, y, t))
             }
@@ -637,11 +677,11 @@ application :: proc() -> Maybe(string) {
                 p: [2]f32 = ---
                 if go_second {
                     t := (value - fx) / (fz - fx)
-                    // assert(t >= 0 && t <= 1)
+                    // assert(t >= -1e-5 && t <= 1 + 1e-5)
                     p = linalg.lerp(x, z, t)
                 } else {
                     t := (value - fy) / (fz - fy)
-                    // assert(t >= 0 && t <= 1)
+                    // assert(t >= -1e-5 && t <= 1 + 1e-5)
                     p = linalg.lerp(y, z, t)
                 }
                 append(indices, cast(u32)len(positions))

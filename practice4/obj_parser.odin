@@ -22,17 +22,24 @@ parse_obj :: proc(path: string) -> (result: ObjData, error: Maybe(string)) {
 
     data, ok := os.read_entire_file(path)
     if !ok do return result, "Failed to read file"
+    defer delete(data)
     content := string(data)
 
     positions: [dynamic][3]f32
+    defer delete(positions)
     normals: [dynamic][3]f32
+    defer delete(normals)
     texcoords: [dynamic][2]f32
+    defer delete(texcoords)
     index_map: map[[3]u32]u32
+    defer delete(index_map)
+
 
     for line in strings.split_lines_iterator(&content) {
         if len(line) == 0 || line[0] == '#' do continue
 
         tokens := strings.split(line, " ")
+        defer delete(tokens)
         tag := tokens[0]
 
         if tag == "v" {
@@ -54,8 +61,10 @@ parse_obj :: proc(path: string) -> (result: ObjData, error: Maybe(string)) {
             append(&texcoords, texcoord)
         } else if tag == "f" {
             vertices: [dynamic]u32
+            defer delete(vertices)
             for i := 1; i < len(tokens); i += 1 {
                 indices := strings.split(tokens[i], "/")
+                defer delete(indices)
                 
                 index: [3]i64
                 index[0], _ = strconv.parse_i64(indices[0])
