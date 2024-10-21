@@ -7,7 +7,7 @@ import "core:reflect"
 
 import gl "vendor:OpenGL"
 
-get_uniform_locations_explicit :: #force_inline proc($T: typeid, program: u32) -> T {
+get_uniform_locations_explicit :: #force_inline proc($T: typeid, program: u32, ignore_missing: bool = false) -> T {
     result: T = ---
     memory := transmute([^]i32)&result
     fields := reflect.struct_fields_zipped(T)
@@ -17,13 +17,16 @@ get_uniform_locations_explicit :: #force_inline proc($T: typeid, program: u32) -
         offset := fields[i].offset / align_of(i32)
         memory[offset] = gl.GetUniformLocation(program, name)
         delete(name, context.temp_allocator)
-        assert(memory[offset] >= 0, "Uniform not found")
+        if (!ignore_missing && memory[offset] < 0) {
+            fmt.eprintfln("Uniform %v not found", name)
+            unreachable()
+        }
     }
     return result
 }
 
-get_uniform_locations_implicit :: #force_inline proc(program: u32, uniforms: ^$T) {
-    uniforms^ = get_uniform_locations_explicit(T, program)
+get_uniform_locations_implicit :: #force_inline proc(program: u32, uniforms: ^$T, ignore_missing: bool = false) {
+    uniforms^ = get_uniform_locations_explicit(T, program, ignore_missing = ignore_missing)
 }
 
 get_uniform_locations :: proc{get_uniform_locations_explicit, get_uniform_locations_implicit}
