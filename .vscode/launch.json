@@ -12,5 +12,13 @@
             "args": [],
             "cwd": "${workspaceFolder}"
         },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Launch this",
+            "program": "${workspaceFolder}/${relativeFileDirname}.bin",
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
     ]
 }

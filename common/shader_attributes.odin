@@ -7,19 +7,26 @@ import "core:reflect"
 
 import gl "vendor:OpenGL"
 
-get_uniform_locations :: #force_inline proc($T: typeid, program: u32) -> T {
+get_uniform_locations_explicit :: #force_inline proc($T: typeid, program: u32) -> T {
     result: T = ---
     memory := transmute([^]i32)&result
     fields := reflect.struct_fields_zipped(T)
     for i in 0..<len(fields) {
         assert(fields[i].type.id == i32, "Only i32 fields are supported")
         name := strings.clone_to_cstring(fields[i].name, context.temp_allocator)
-        memory[fields[i].offset / align_of(i32)] = gl.GetUniformLocation(program, name)
+        offset := fields[i].offset / align_of(i32)
+        memory[offset] = gl.GetUniformLocation(program, name)
         delete(name, context.temp_allocator)
-        assert(memory[i] >= 0, "Uniform not found")
+        assert(memory[offset] >= 0, "Uniform not found")
     }
     return result
 }
+
+get_uniform_locations_implicit :: #force_inline proc(program: u32, uniforms: ^$T) {
+    uniforms^ = get_uniform_locations_explicit(T, program)
+}
+
+get_uniform_locations :: proc{get_uniform_locations_explicit, get_uniform_locations_implicit}
 
 configure_vao_attribute :: #force_inline proc(location: u32, T: typeid, stride: i32 = -1, offset: i32 = 0) {
     stride := stride

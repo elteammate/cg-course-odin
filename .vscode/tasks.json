@@ -25,6 +25,27 @@
             },
         },
         {
+            "label": "odin: Build This",
+            "type": "shell",
+            "command": "odin build ${fileDirname} -debug",
+            "problemMatcher": {
+                "owner": "odin",
+                "fileLocation": "absolute",
+                "source": "odin",
+                "severity": "error",
+                "pattern": {
+                    "regexp": "^(.+\\.odin)\\((\\d+)\\:(\\d+)\\) (.+?:)? (.+)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "message": 5,
+                }
+            },
+            "presentation": {
+                "clear": true,
+            },
+        },
+        {
             "label": "odin: Run This (optimized)",
             "type": "shell",
             "command": "odin run ${fileDirname} -o:aggressive",
