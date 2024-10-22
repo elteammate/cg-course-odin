@@ -8,7 +8,6 @@ import "core:mem"
 import "core:slice"
 import "core:math"
 import "core:math/linalg"
-import glsl_linalg "core:math/linalg/glsl"
 import "core:reflect"
 import "core:testing"
 import "core:c/libc"
@@ -110,6 +109,8 @@ application :: proc() -> Maybe(string) {
     gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, dimensions.x / 2, dimensions.y / 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, nil)
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT)
     gl.FramebufferTexture(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, texture, 0)
 
     depth_renderbuffer: u32
@@ -125,7 +126,7 @@ application :: proc() -> Maybe(string) {
     last_frame_start := timelib.now()
     time: f32 = 0.0
     view_angle: f32 = 0.0
-    camera_distance: f32 = 0.5
+    camera_distance: f32 = 0.6
     model_angle: f32 = math.PI / 2
     model_scale: f32 = 1.0
 
@@ -164,6 +165,8 @@ application :: proc() -> Maybe(string) {
         ROTATION_SPEED :: 2.0
         if button_down[sdl.Keycode.UP] do camera_distance -= SPEED * dt
         if button_down[sdl.Keycode.DOWN] do camera_distance += SPEED * dt
+        if button_down[sdl.Keycode.A] do view_angle += ROTATION_SPEED * dt
+        if button_down[sdl.Keycode.D] do view_angle -= ROTATION_SPEED * dt
         if button_down[sdl.Keycode.LEFT] do model_angle += ROTATION_SPEED * dt
         if button_down[sdl.Keycode.RIGHT] do model_angle -= ROTATION_SPEED * dt
 
@@ -182,31 +185,31 @@ application :: proc() -> Maybe(string) {
 
         configs := [?]Render_Config{
             {
-                view = linalg.matrix4_rotate(view_angle, [3]f32{1, 0, 0}) * linalg.matrix4_translate([3]f32{0.0, 0.0, -camera_distance}),
+                view = linalg.matrix4_translate([3]f32{0.0, 0.0, -camera_distance}) * linalg.matrix4_rotate(view_angle, [3]f32{1, 0, 0}),
                 projection = linalg.matrix4_perspective(math.PI / 2, aspect_ratio, near, far),
                 center = {-0.5, -0.5},
-                clear_color = {0.8, 0.8, 1.0},
+                clear_color = {0.75, 0.75, 1.0},
                 mode = 0,
             },
             {
                 view = linalg.matrix4_translate([3]f32{0.0, 0.0, -camera_distance}),
                 projection = linalg.matrix_ortho3d(-aspect_ratio * top, aspect_ratio * top, -top, top, near, far),
                 center = {0.5, -0.5},
-                clear_color = {1.0, 0.7, 0.8},
+                clear_color = {1.0, 0.75, 0.75},
                 mode = 1,
             },
             {
-                view = linalg.matrix4_rotate(-math.PI / 2, [3]f32{0, 1, 0}) * linalg.matrix4_translate([3]f32{-camera_distance, 0.0, 0.0}),
+                view = linalg.matrix4_translate([3]f32{0.0, 0.0, -camera_distance}) * linalg.matrix4_rotate(-math.PI / 2, [3]f32{0, 1, 0}),
                 projection = linalg.matrix_ortho3d(-aspect_ratio * top, aspect_ratio * top, -top, top, near, far),
                 center = {0.5, 0.5},
-                clear_color = {1.0, 1.0, 0.8},
+                clear_color = {1.0, 1.0, 0.65},
                 mode = 2,
             },
             {
-                view = linalg.matrix4_rotate(math.PI / 2, [3]f32{1, 0, 0}) * linalg.matrix4_translate([3]f32{0.0, -camera_distance, 0.0}),
+                view = linalg.matrix4_translate([3]f32{0.0, 0.0, -camera_distance}) * linalg.matrix4_rotate(math.PI / 2, [3]f32{1, 0, 0}),
                 projection = linalg.matrix_ortho3d(-aspect_ratio * top, aspect_ratio * top, -top, top, near, far),
                 center = {-0.5, 0.5},
-                clear_color = {0.8, 1.0, 0.8},
+                clear_color = {0.64, 1.0, 0.65},
                 mode = 3,
             },
         }
