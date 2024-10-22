@@ -63,7 +63,11 @@ application :: proc() -> Maybe(string) {
         using gpu_data: common.Gpu_Obj_Data,
         program: u32,
         uniforms: struct {
-            model, view, projection, camera_position, albedo, ambient_light: i32
+            model, view, projection, camera_position, albedo, ambient_light,
+            sun_direction, sun_color,
+            point_light_position, point_light_color, point_light_attenuation,
+            view_direction,
+            glossiness, roughness: i32
         }
     }
 
@@ -84,6 +88,7 @@ application :: proc() -> Maybe(string) {
 
     last_frame_start := timelib.now()
     time: f32 = 0.0
+    transparent: bool = false
 
     camera_distance: f32 = 3.0
     camera_x: f32 = 0.0
@@ -105,6 +110,16 @@ application :: proc() -> Maybe(string) {
                             dimensions.y = event.window.data2
                     }
                 case .KEYDOWN:
+                    if (event.key.keysym.sym == .SPACE && !button_down[.SPACE]) {
+                        transparent = !transparent;
+                        if (transparent) {
+                            gl.Enable(gl.BLEND)
+                            gl.BlendEquation(gl.FUNC_ADD)
+                            gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+                        } else {
+                            gl.Disable(gl.BLEND)
+                        }
+                    }
                     button_down[event.key.keysym.sym] = true
                 case .KEYUP:
                     button_down[event.key.keysym.sym] = false
@@ -132,8 +147,6 @@ application :: proc() -> Maybe(string) {
         far: f32 = 100.0
         aspect_ratio := f32(dimensions.x) / f32(dimensions.y)
 
-        model := linalg.MATRIX4F32_IDENTITY
-
         view := 
             linalg.matrix4_translate([3]f32{0, 0, -camera_distance}) *
             linalg.matrix4_rotate(camera_angle, [3]f32{0, 1, 0}) *
@@ -141,21 +154,37 @@ application :: proc() -> Maybe(string) {
 
         projection := linalg.matrix4_perspective(math.PI / 3, f32(dimensions.x) / f32(dimensions.y), near, far)
         camera_position := linalg.inverse(view) * [4]f32{0, 0, 0, 1};
+        view_direction := linalg.normalize(linalg.inverse(view) * [4]f32{0, 0, 1, 0})
 
         flat_view := linalg.matrix_flatten(view)
-        flat_model := linalg.matrix_flatten(model)
         flat_projection := linalg.matrix_flatten(projection)
 
         gl.UseProgram(suzanne.program)
-        gl.UniformMatrix4fv(suzanne.uniforms.model, 1, gl.FALSE, raw_data(flat_model[:]))
         gl.UniformMatrix4fv(suzanne.uniforms.view, 1, gl.FALSE, raw_data(flat_view[:]))
         gl.UniformMatrix4fv(suzanne.uniforms.projection, 1, gl.FALSE, raw_data(flat_projection[:]))
         gl.Uniform3fv(suzanne.uniforms.camera_position, 1, raw_data(camera_position[:]))
+        gl.Uniform3f(suzanne.uniforms.view_direction, view_direction.x, view_direction.y, view_direction.z)
         gl.Uniform3f(suzanne.uniforms.albedo, 0.7, 0.4, 0.2)
         gl.Uniform3f(suzanne.uniforms.ambient_light, 0.2, 0.2, 0.2)
+        sun_direction := linalg.normalize([3]f32{0.2, 1.0, 0.6})
+        gl.Uniform3f(suzanne.uniforms.sun_direction, sun_direction.x, sun_direction.y, sun_direction.z)
+        gl.Uniform3f(suzanne.uniforms.sun_color, 1.0, 0.9, 0.8)
+        gl.Uniform3f(suzanne.uniforms.point_light_position, math.sin(time * 3) * 3.0, 0.5, math.cos(time * 3) * 3.0)
+        gl.Uniform3f(suzanne.uniforms.point_light_color, 1.9, 5.6, 0.9)
+        gl.Uniform3f(suzanne.uniforms.point_light_attenuation, 1.0, 0.0, 0.01)
 
-        gl.BindVertexArray(suzanne.vao)
-        gl.DrawElements(gl.TRIANGLES, suzanne.indices_count, gl.UNSIGNED_INT, nil)
+        STEP :: 2.5
+        for i in 0..<3 {
+            for j in 0..<3 {
+                model := linalg.matrix4_translate([3]f32{f32(j - 1) * STEP, f32(i - 1) * STEP, 0.0})
+                flat_model := linalg.matrix_flatten(model)
+                gl.UniformMatrix4fv(suzanne.uniforms.model, 1, gl.FALSE, raw_data(flat_model[:]))
+                gl.Uniform1f(suzanne.uniforms.glossiness, math.pow(3.0, f32(i)))
+                gl.Uniform1f(suzanne.uniforms.roughness, 0.1 + 0.2 * f32(j))
+                gl.BindVertexArray(suzanne.vao)
+                gl.DrawElements(gl.TRIANGLES, suzanne.indices_count, gl.UNSIGNED_INT, nil)
+            }
+        }
 
         sdl.GL_SwapWindow(window)
     }
