@@ -59,7 +59,13 @@ _compile_shader :: proc(
         gl.GetShaderiv(shader, gl.INFO_LOG_LENGTH, &infolog_size)
         infolog := make([]u8, infolog_size)
         gl.GetShaderInfoLog(shader, infolog_size, nil, raw_data(infolog))
-        return 0, fmt.tprintf("Error compiling shader: %s", string(infolog))
+        return 0, fmt.tprintf(
+            "Error compiling %s: %s",
+                type == .VERTEX_SHADER ? "vertex shader" :
+                type == .FRAGMENT_SHADER ? "fragment shader" : 
+                "unknown shader",
+            string(infolog),
+        )
     }
     return shader, nil
 }
