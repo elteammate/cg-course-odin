@@ -99,6 +99,25 @@ application :: proc() -> Maybe(string) {
     common.get_uniform_locations(scene.shadow_program, &scene.shadow_uniforms)
 
     scene_data := common.load_obj_file("practice9/bunny.obj") or_return
+
+    scene_bb_min := scene_data.vertices[0].position
+    scene_bb_max := scene_data.vertices[0].position
+    for vertex in scene_data.vertices {
+        scene_bb_min = linalg.min(scene_bb_min, vertex.position)
+        scene_bb_max = linalg.max(scene_bb_max, vertex.position)
+    }
+    scene_bb_center := (scene_bb_min + scene_bb_max) / 2
+    scene_bb_vertices := [?][3]f32{
+        {scene_bb_min.x, scene_bb_min.y, scene_bb_min.z},
+        {scene_bb_min.x, scene_bb_min.y, scene_bb_max.z},
+        {scene_bb_min.x, scene_bb_max.y, scene_bb_min.z},
+        {scene_bb_min.x, scene_bb_max.y, scene_bb_max.z},
+        {scene_bb_max.x, scene_bb_min.y, scene_bb_min.z},
+        {scene_bb_max.x, scene_bb_min.y, scene_bb_max.z},
+        {scene_bb_max.x, scene_bb_max.y, scene_bb_min.z},
+        {scene_bb_max.x, scene_bb_max.y, scene_bb_max.z},
+    }
+
     defer common.destory_obj_data(scene_data)
     scene.gpu_data = common.send_obj_to_gpu(scene_data)
     defer common.destroy_gpu_obj_data(scene.gpu_data)
@@ -118,19 +137,33 @@ application :: proc() -> Maybe(string) {
     shadow_map: u32
     gl.GenTextures(1, &shadow_map)
     gl.BindTexture(gl.TEXTURE_2D, shadow_map)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    // gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    // gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    // gl.TexImage2D(
+    //     gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, shadow_map_resolution, shadow_map_resolution, 0,
+    //     gl.DEPTH_COMPONENT, gl.FLOAT, nil
+    // )
     gl.TexImage2D(
-        gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, shadow_map_resolution, shadow_map_resolution, 0,
-        gl.DEPTH_COMPONENT, gl.FLOAT, nil
+        gl.TEXTURE_2D, 0, gl.RG32F, shadow_map_resolution, shadow_map_resolution, 0,
+        gl.RGBA, gl.FLOAT, nil
     )
+
+    shadow_depth_rbo: u32
+    gl.GenRenderbuffers(1, &shadow_depth_rbo)
+    gl.BindRenderbuffer(gl.RENDERBUFFER, shadow_depth_rbo)
+    gl.RenderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, shadow_map_resolution, shadow_map_resolution)
 
     shadow_fbo: u32
     gl.GenFramebuffers(1, &shadow_fbo)
     gl.BindFramebuffer(gl.FRAMEBUFFER, shadow_fbo)
-    gl.FramebufferTexture(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, shadow_map, 0)
+    // gl.FramebufferTexture(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, shadow_map, 0)
+    gl.FramebufferTexture(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, shadow_map, 0)
+    gl.FramebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, shadow_depth_rbo)
+
     if (gl.CheckFramebufferStatus(gl.FRAMEBUFFER) != gl.FRAMEBUFFER_COMPLETE) {
         return "Failed to create shadow framebuffer"
     }
@@ -191,6 +224,7 @@ application :: proc() -> Maybe(string) {
         light_direction := linalg.normalize([3]f32{math.cos(time * 0.5), 1.0, math.sin(time * 0.5)})
 
         gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, shadow_fbo)
+        gl.ClearColor(1, 1, 0, 0)
         gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
         gl.Viewport(0, 0, shadow_map_resolution, shadow_map_resolution)
         gl.Enable(gl.DEPTH_TEST)
@@ -203,10 +237,26 @@ application :: proc() -> Maybe(string) {
         light_y := linalg.cross(light_x, light_z)
         shadow_scale: f32 = 2
 
-        transform := linalg.transpose(matrix[4, 4]f32{
-            shadow_scale * light_x.x, shadow_scale * light_y.x, shadow_scale * light_z.x, 0,
-            shadow_scale * light_x.y, shadow_scale * light_y.y, shadow_scale * light_z.y, 0,
-            shadow_scale * light_x.z, shadow_scale * light_y.z, shadow_scale * light_z.z, 0,
+        // transform := linalg.transpose(matrix[4, 4]f32{
+        //     shadow_scale * light_x.x, shadow_scale * light_y.x, shadow_scale * light_z.x, 0,
+        //     shadow_scale * light_x.y, shadow_scale * light_y.y, shadow_scale * light_z.y, 0,
+        //     shadow_scale * light_x.z, shadow_scale * light_y.z, shadow_scale * light_z.z, 0,
+        //     0, 0, 0, 1,
+        // })
+
+        furthest_point_along_direction :: proc(dir, o: [3]f32, points: [][3]f32) -> (result: f32) {
+            result = -math.INF_F32
+            for p in points do result = max(result, abs(linalg.dot(dir, p - o)))
+            return
+        }
+
+        light_x *= furthest_point_along_direction(light_x, scene_bb_center, scene_bb_vertices[:])
+        light_y *= furthest_point_along_direction(light_y, scene_bb_center, scene_bb_vertices[:])
+        light_z *= furthest_point_along_direction(light_z, scene_bb_center, scene_bb_vertices[:])
+        transform := linalg.inverse(matrix[4, 4]f32{
+            light_x.x, light_y.x, light_z.x, scene_bb_center.x,
+            light_x.y, light_y.y, light_z.y, scene_bb_center.y,
+            light_x.z, light_y.z, light_z.z, scene_bb_center.z,
             0, 0, 0, 1,
         })
 

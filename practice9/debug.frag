@@ -8,5 +8,5 @@ layout (location = 0) out vec4 out_color;
 
 void main()
 {
-    out_color = vec4(texture(shadow_map, texcoord).rrr, 1.0);
+    out_color = vec4(texture(shadow_map, texcoord).rg, 0.0, 1.0);
 }
