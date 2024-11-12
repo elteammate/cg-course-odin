@@ -138,21 +138,25 @@ load_obj_file :: proc(path: string) -> (result: Obj_Data, error: Maybe(string)) 
 }
 
 send_obj_to_gpu :: proc(data: Obj_Data) -> (result: Gpu_Obj_Data) {
+    return send_vertices_indices_to_gpu(data.vertices[:], data.indices[:])
+}
+
+send_vertices_indices_to_gpu :: #force_inline proc(vertices: []$V, indices: []u32) -> (result: Gpu_Obj_Data) {
     gl.GenVertexArrays(1, &result.vao)
     gl.BindVertexArray(result.vao)
     defer gl.BindVertexArray(0)
 
     gl.GenBuffers(1, &result.vbo)
     gl.BindBuffer(gl.ARRAY_BUFFER, result.vbo)
-    gl.BufferData(gl.ARRAY_BUFFER, len(data.vertices) * size_of(Vertex), raw_data(data.vertices), gl.STATIC_DRAW)
+    gl.BufferData(gl.ARRAY_BUFFER, len(vertices) * size_of(V), raw_data(vertices), gl.STATIC_DRAW)
 
     gl.GenBuffers(1, &result.ebo)
     gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, result.ebo)
-    gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(data.indices) * size_of(u32), raw_data(data.indices), gl.STATIC_DRAW)
+    gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(indices) * size_of(u32), raw_data(indices), gl.STATIC_DRAW)
 
-    configure_vao_attributes(Vertex)
+    configure_vao_attributes(V)
 
-    result.indices_count = cast(i32)(len(data.indices))
+    result.indices_count = cast(i32)(len(indices))
 
     return
 }
