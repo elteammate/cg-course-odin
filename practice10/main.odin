@@ -109,11 +109,30 @@ application :: proc() -> Maybe(string) {
 
     gl.ClearColor(0.8, 0.8, 1.0, 0.0)
 
+    environment: struct {
+        vao: u32,
+        program: u32,
+        uniforms: struct {
+            view_projection_inverse, environment_map, camera_position: i32
+        }
+    }
+
+    gl.GenVertexArrays(1, &environment.vao);
+    env_shaders := common.compile_shader_program({
+        vertex_source = #load("environment.vert", string),
+        fragment_source = #load("environment.frag", string),
+    }) or_return
+    defer common.destroy_shader_program(env_shaders)
+    environment.program = env_shaders.program
+    common.get_uniform_locations(environment.program, &environment.uniforms, ignore_missing = true)
+
     sphere: struct {
         using gpu_data: common.Gpu_Obj_Data,
         program: u32,
         uniforms: struct {
-            model, view, projection, light_direction, camera_position, albedo_texture: i32
+            model, view, projection, light_direction, camera_position,
+            albedo_texture, normal_texture,
+            environment_map: i32
         }
     }
 
@@ -130,8 +149,18 @@ application :: proc() -> Maybe(string) {
     delete(vertices)
     delete(indices)
 
-
     albedo_texture := load_texture("practice10/textures/brick_albedo.jpg")
+    normal_texture := load_texture("practice10/textures/brick_normal.jpg")
+    environment_map := load_texture("practice10/textures/environment_map.jpg")
+    panorama := load_texture("practice10/textures/panorama_image.png")
+    panorama2 := load_texture("practice10/textures/hell.png")
+
+    panoramas := [?]u32{
+        environment_map, panorama, panorama2
+    }
+
+    reflect_panorama := 1
+    environment_panorama := 0
 
     free_all(context.temp_allocator)
 
@@ -163,6 +192,10 @@ application :: proc() -> Maybe(string) {
                     #partial switch event.key.keysym.sym {
                         case .ESCAPE:
                             running = false
+                        case .NUM1:
+                            reflect_panorama = (reflect_panorama + 1) % len(panoramas)
+                        case .NUM2:
+                            environment_panorama = (environment_panorama + 1) % len(panoramas)
                         case .SPACE:
                             paused = !paused
                     }
@@ -206,6 +239,7 @@ application :: proc() -> Maybe(string) {
         flat_model := linalg.matrix_flatten(model)
         flat_view := linalg.matrix_flatten(view)
         flat_projection := linalg.matrix_flatten(projection)
+        flat_view_projection_inverse := linalg.matrix_flatten(linalg.inverse(projection * view))
 
         gl.UseProgram(sphere.program)
         gl.UniformMatrix4fv(sphere.uniforms.model, 1, false, raw_data(flat_model[:]))
@@ -214,12 +248,29 @@ application :: proc() -> Maybe(string) {
         gl.Uniform3f(sphere.uniforms.light_direction, light_direction.x, light_direction.y, light_direction.z)
         gl.Uniform3f(sphere.uniforms.camera_position, camera_position.x, camera_position.y, camera_position.z)
         gl.Uniform1i(sphere.uniforms.albedo_texture, 0)
+        gl.Uniform1i(sphere.uniforms.normal_texture, 1)
+        gl.Uniform1i(sphere.uniforms.environment_map, 2)
 
         gl.ActiveTexture(gl.TEXTURE0)
         gl.BindTexture(gl.TEXTURE_2D, albedo_texture)
+        gl.ActiveTexture(gl.TEXTURE0 + 1)
+        gl.BindTexture(gl.TEXTURE_2D, normal_texture)
+        gl.ActiveTexture(gl.TEXTURE0 + 2)
+        gl.BindTexture(gl.TEXTURE_2D, panoramas[reflect_panorama])
 
         gl.BindVertexArray(sphere.vao)
         gl.DrawElements(gl.TRIANGLES, sphere.indices_count, gl.UNSIGNED_INT, nil)
+
+        gl.UseProgram(environment.program)
+        gl.UniformMatrix4fv(environment.uniforms.view_projection_inverse, 1, false, raw_data(flat_view_projection_inverse[:]))
+        gl.Uniform3f(environment.uniforms.camera_position, camera_position.x, camera_position.y, camera_position.z)
+
+        gl.ActiveTexture(gl.TEXTURE0 + 2)
+        gl.BindTexture(gl.TEXTURE_2D, panoramas[environment_panorama])
+        gl.Uniform1i(environment.uniforms.environment_map, 2)
+
+        gl.BindVertexArray(environment.vao)
+        gl.DrawArrays(gl.TRIANGLES, 0, 3)
 
         sdl.GL_SwapWindow(window)
     }
