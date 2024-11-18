@@ -1,0 +1,5 @@
+newmtl Material
+	Ns 10.0000
+	d 1.0000
+	Ks 0.0000
+	map_Ka uv-debug.png
