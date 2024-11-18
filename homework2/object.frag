@@ -133,6 +133,6 @@ void main() {
         ) * point_fraction * point_shadow_factor
     );
 
-    // out_color = vec4(color, 1.0);
-    out_color = vec4(texture(point_shadow_map, camera_position - position).rgb, 1.0);
+    out_color = vec4(color, 1.0);
+    // out_color = vec4(texture(point_shadow_map, camera_position - position).rgb, 1.0);
 }

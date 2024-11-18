@@ -260,6 +260,7 @@ Lights :: struct {
     point_shadow_map: u32,
     point_shadow_depth: u32,
     point_shadow_fbos: [6]u32,
+    cached_point_transform: matrix[4, 4]f32,
     near: f32,
     far: f32,
 }
@@ -280,6 +281,8 @@ init_lights :: proc(lights: ^Lights) {
 
     gl.GenTextures(1, &lights.point_shadow_map)
     gl.BindTexture(gl.TEXTURE_CUBE_MAP, lights.point_shadow_map)
+    gl.TexParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.TexParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
     for side in CUBEMAP_SIDES {
         gl.TexImage2D(side, 0, gl.RG32F, POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE, 0, gl.RGBA, gl.FLOAT, nil)
     }
@@ -340,6 +343,7 @@ bind_shadow_map :: proc(lights: ^Lights, uniforms: ^Uniforms, i: int, scene_aabb
             lights.point_position + CUBEMAP_FACE_ORIENTATIONS[i][0],
             CUBEMAP_FACE_ORIENTATIONS[i][1],
         )
+        lights.cached_point_transform = transform
 
         flat_transform := linalg.matrix_flatten(transform)
         gl.UniformMatrix4fv(uniforms.transform, 1, false, raw_data(flat_transform[:]))
