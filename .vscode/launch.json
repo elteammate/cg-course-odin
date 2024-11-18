@@ -7,10 +7,11 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Launch",
-            "program": "${workspaceFolder}/homework1.bin",
-            "args": [],
-            "cwd": "${workspaceFolder}"
+            "name": "Launch homework 2",
+            "program": "${workspaceFolder}/homework2.bin",
+            "args": ["homework2/models/sponza/sponza.obj"],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "odin: Build Homework2"
         },
         {
             "type": "lldb",

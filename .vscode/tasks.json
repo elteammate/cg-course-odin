@@ -17,12 +17,12 @@
                     "file": 1,
                     "line": 2,
                     "column": 3,
-                    "message": 5,
+                    "message": 5
                 }
             },
             "presentation": {
-                "clear": true,
-            },
+                "clear": true
+            }
         },
         {
             "label": "odin: Build This",
@@ -38,12 +38,12 @@
                     "file": 1,
                     "line": 2,
                     "column": 3,
-                    "message": 5,
+                    "message": 5
                 }
             },
             "presentation": {
-                "clear": true,
-            },
+                "clear": true
+            }
         },
         {
             "label": "odin: Run This (optimized)",
@@ -59,12 +59,12 @@
                     "file": 1,
                     "line": 2,
                     "column": 3,
-                    "message": 5,
+                    "message": 5
                 }
             },
             "presentation": {
-                "clear": true,
-            },
+                "clear": true
+            }
         },
         {
             "label": "odin: Test This",
@@ -80,54 +80,12 @@
                     "file": 1,
                     "line": 2,
                     "column": 3,
-                    "message": 5,
+                    "message": 5
                 }
             },
             "presentation": {
-                "clear": true,
-            },
-        },
-        {
-            "label": "odin: Run Homework1",
-            "type": "shell",
-            "command": "odin run homework1 -debug",
-            "problemMatcher": {
-                "owner": "odin",
-                "fileLocation": "absolute",
-                "source": "odin",
-                "severity": "error",
-                "pattern": {
-                    "regexp": "^(.+\\.odin)\\((\\d+)\\:(\\d+)\\) (.+?:)? (.+)$",
-                    "file": 1,
-                    "line": 2,
-                    "column": 3,
-                    "message": 5,
-                }
-            },
-            "presentation": {
-                "clear": true,
-            },
-        },
-        {
-            "label": "odin: Build Homework1",
-            "type": "shell",
-            "command": "odin build homework1 -debug",
-            "problemMatcher": {
-                "owner": "odin",
-                "fileLocation": "absolute",
-                "source": "odin",
-                "severity": "error",
-                "pattern": {
-                    "regexp": "^(.+\\.odin)\\((\\d+)\\:(\\d+)\\) (.+?:)? (.+)$",
-                    "file": 1,
-                    "line": 2,
-                    "column": 3,
-                    "message": 5,
-                }
-            },
-            "presentation": {
-                "clear": true,
-            },
+                "clear": true
+            }
         },
         {
             "label": "odin: Run This and Sanitize",
@@ -143,12 +101,12 @@
                     "file": 1,
                     "line": 2,
                     "column": 3,
-                    "message": 5,
+                    "message": 5
                 }
             },
             "presentation": {
-                "clear": true,
-            },
+                "clear": true
+            }
         },
         {
             "label": "odin: Run Root",
@@ -164,12 +122,39 @@
                     "file": 1,
                     "line": 2,
                     "column": 3,
-                    "message": 6,
+                    "message": 6
                 }
             },
             "presentation": {
-                "clear": true,
-            },
+                "clear": true
+            }
         },
+        {
+            "label": "odin: Run Homework2",
+            "type": "shell",
+            "command": "odin run homework2 -debug -- homework2/models/cube/cube.obj",
+            "presentation": {
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "odin: Run Homework2 and sanitize",
+            "type": "shell",
+            "command": "odin run homework2 -sanitize:address -debug -- homework2/models/sponza/sponza.obj",
+            "presentation": {
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "odin: Build Homework2",
+            "type": "shell",
+            "command": "odin build homework2 -debug",
+            "presentation": {
+                "clear": true
+            },
+            "problemMatcher": []
+        }
     ]
 }
