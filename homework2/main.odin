@@ -21,6 +21,10 @@ import common "../common"
 
 TEXTURE_UNIT_ALBEDO :: 0
 TRANSPARENCY_TEXTURE_UNIT :: 1
+SUN_SHADOW_TEXTURE_UNIT :: 2
+POINT_SHADOW_TEXTURE_UNIT :: 3
+
+SHADOW_BIAS :: 1e-3
 
 Vertex :: struct {
     position: [3]f32,
@@ -56,6 +60,7 @@ Object_Gpu :: struct {
 
 Uniforms :: struct {
     model, view, projection,
+    transform,
 
     albedo, albedo_tex, use_albedo_tex,
     transparency_tex, use_transparency_tex,
@@ -64,21 +69,15 @@ Uniforms :: struct {
     camera_position, view_direction,
 
     ambient,
-    sun_direction, sun_color,
-    point_position, point_color, point_attenuation,
+    sun_direction, sun_color, sun_shadow_map, sun_transform,
+    point_position, point_color, point_attenuation, point_far, point_near, point_shadow_map,
+    shadow_bias,
 
     dummy: i32
 }
 
-Lights :: struct {
-    ambient: [3]f32,
-
-    sun_direction: [3]f32,
-    sun_color: [3]f32,
-
-    point_position: [3]f32,
-    point_color: [3]f32,
-    point_attenuation: [3]f32,
+Debug_Uniforms :: struct {
+    center, size, tex: i32
 }
 
 send_object_to_gpu :: proc(object: ^Object) -> (o: Object_Gpu) {
@@ -198,7 +197,9 @@ send_material_to_gpu :: proc(mat: ^Material_Data) -> (m: Material_Gpu, error: Ma
 
 prepare_object_shader_program :: proc(program: u32, uniforms: ^Uniforms) {
     gl.UseProgram(program)
+    gl.BindFramebuffer(gl.FRAMEBUFFER, 0)
     gl.Uniform1i(uniforms.albedo_tex, TEXTURE_UNIT_ALBEDO)
+    gl.Uniform1f(uniforms.shadow_bias, SHADOW_BIAS)
     gl.Uniform1i(uniforms.transparency_tex, TRANSPARENCY_TEXTURE_UNIT)
 }
 
@@ -225,15 +226,152 @@ bind_material :: proc(mat: Material_Gpu, uniforms: ^Uniforms) {
     gl.Uniform1f(uniforms.power, mat.power)
 }
 
+CUBEMAP_SIDES := [?]u32{
+    gl.TEXTURE_CUBE_MAP_POSITIVE_X, gl.TEXTURE_CUBE_MAP_NEGATIVE_X,
+    gl.TEXTURE_CUBE_MAP_POSITIVE_Y, gl.TEXTURE_CUBE_MAP_NEGATIVE_Y,
+    gl.TEXTURE_CUBE_MAP_POSITIVE_Z, gl.TEXTURE_CUBE_MAP_NEGATIVE_Z,
+}
+
+CUBEMAP_FACE_ORIENTATIONS := [6][2][3]f32{
+    {{1, 0, 0}, {0, -1, 0}},
+    {{-1, 0, 0}, {0, -1, 0}},
+    {{0, 1, 0}, {0, 0, 1}},
+    {{0, -1, 0}, {0, 0, -1}},
+    {{0, 0, 1}, {0, -1, 0}},
+    {{0, 0, -1}, {0, -1, 0}},
+}
+
+SUN_SHADOW_MAP_SIZE :: 2048
+POINT_SHADOW_MAP_SIZE :: 1024
+
+Lights :: struct {
+    ambient: [3]f32,
+
+    sun_direction: [3]f32,
+    sun_color: [3]f32,
+    sun_shadow_map: u32,
+    sun_shadow_fbo: u32,
+    sun_shadow_rbo_depth: u32,
+    cached_sun_transform: matrix[4, 4]f32,
+
+    point_position: [3]f32,
+    point_color: [3]f32,
+    point_attenuation: [3]f32,
+    point_shadow_map: u32,
+    point_shadow_depth: u32,
+    point_shadow_fbos: [6]u32,
+    near: f32,
+    far: f32,
+}
+
+init_lights :: proc(lights: ^Lights) {
+    gl.GenTextures(1, &lights.sun_shadow_map)
+    gl.BindTexture(gl.TEXTURE_2D, lights.sun_shadow_map)
+    gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RG32F, SUN_SHADOW_MAP_SIZE, SUN_SHADOW_MAP_SIZE, 0, gl.RGBA, gl.FLOAT, nil)
+
+    gl.GenRenderbuffers(1, &lights.sun_shadow_rbo_depth)
+    gl.BindRenderbuffer(gl.RENDERBUFFER, lights.sun_shadow_rbo_depth)
+    gl.RenderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, SUN_SHADOW_MAP_SIZE, SUN_SHADOW_MAP_SIZE)
+
+    gl.GenFramebuffers(1, &lights.sun_shadow_fbo)
+    gl.BindFramebuffer(gl.FRAMEBUFFER, lights.sun_shadow_fbo)
+    gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, lights.sun_shadow_map, 0)
+    gl.FramebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, lights.sun_shadow_rbo_depth)
+
+    gl.GenTextures(1, &lights.point_shadow_map)
+    gl.BindTexture(gl.TEXTURE_CUBE_MAP, lights.point_shadow_map)
+    for side in CUBEMAP_SIDES {
+        gl.TexImage2D(side, 0, gl.RG32F, POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE, 0, gl.RGBA, gl.FLOAT, nil)
+    }
+
+    gl.GenRenderbuffers(1, &lights.point_shadow_depth)
+    gl.BindRenderbuffer(gl.RENDERBUFFER, lights.point_shadow_depth)
+    gl.RenderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE)
+
+    gl.GenFramebuffers(6, raw_data(lights.point_shadow_fbos[:]))
+    for i in 0..<6 {
+        gl.BindFramebuffer(gl.FRAMEBUFFER, lights.point_shadow_fbos[i])
+        gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, CUBEMAP_SIDES[i], lights.point_shadow_map, 0)
+        gl.FramebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, lights.point_shadow_depth)
+    }
+}
+
+bind_shadow_map :: proc(lights: ^Lights, uniforms: ^Uniforms, i: int, scene_aabb: AABB) {
+    assert(0 <= i && i < 7)
+
+    if i == 0 {
+        light_z := -lights.sun_direction;
+        light_x := linalg.normalize(linalg.cross(light_z, [3]f32{0.0, 1.0, 0.0}))
+        light_y := linalg.normalize(linalg.cross(light_x, light_z))
+
+        furthest_point_along_direction :: proc(dir, o: [3]f32, points: [][3]f32) -> (result: f32) {
+            result = -math.INF_F32
+            for p in points do result = max(result, linalg.dot(dir, p - o))
+            return
+        }
+
+        scene_center := (scene_aabb.min + scene_aabb.max) * 0.5
+        aabb_vertices := aabb_vertices(scene_aabb)
+
+        light_x *= furthest_point_along_direction(light_x, scene_center, aabb_vertices[:])
+        light_y *= furthest_point_along_direction(light_y, scene_center, aabb_vertices[:])
+        light_z *= furthest_point_along_direction(light_z, scene_center, aabb_vertices[:])
+        transform := linalg.inverse(matrix[4, 4]f32{
+            light_x.x, light_y.x, light_z.x, scene_center.x,
+            light_x.y, light_y.y, light_z.y, scene_center.y,
+            light_x.z, light_y.z, light_z.z, scene_center.z,
+            0, 0, 0, 1,
+        })
+        lights.cached_sun_transform = transform
+
+        flat_transform := linalg.matrix_flatten(transform)
+        gl.UniformMatrix4fv(uniforms.transform, 1, false, raw_data(flat_transform[:]))
+
+        gl.Viewport(0, 0, SUN_SHADOW_MAP_SIZE, SUN_SHADOW_MAP_SIZE)
+        gl.BindFramebuffer(gl.FRAMEBUFFER, lights.sun_shadow_fbo)
+    } else {
+        i := i - 1
+        side := CUBEMAP_SIDES[i]
+
+        transform := linalg.matrix4_perspective_f32(
+            math.PI / 2, 1, lights.near, lights.far,
+        ) * linalg.matrix4_look_at_f32(
+            lights.point_position,
+            lights.point_position + CUBEMAP_FACE_ORIENTATIONS[i][0],
+            CUBEMAP_FACE_ORIENTATIONS[i][1],
+        )
+
+        flat_transform := linalg.matrix_flatten(transform)
+        gl.UniformMatrix4fv(uniforms.transform, 1, false, raw_data(flat_transform[:]))
+
+        gl.Viewport(0, 0, POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE)
+        gl.BindFramebuffer(gl.FRAMEBUFFER, lights.point_shadow_fbos[i])
+    }
+}
+
 bind_lights :: proc(lights: Lights, uniforms: ^Uniforms) {
     lights := lights
 
     gl.Uniform3fv(uniforms.ambient, 1, raw_data(lights.ambient[:]))
     gl.Uniform3fv(uniforms.sun_direction, 1, raw_data(lights.sun_direction[:]))
     gl.Uniform3fv(uniforms.sun_color, 1, raw_data(lights.sun_color[:]))
+    gl.UniformMatrix4fv(uniforms.sun_transform, 1, false, &lights.cached_sun_transform[0, 0])
+
     gl.Uniform3fv(uniforms.point_position, 1, raw_data(lights.point_position[:]))
     gl.Uniform3fv(uniforms.point_color, 1, raw_data(lights.point_color[:]))
     gl.Uniform3fv(uniforms.point_attenuation, 1, raw_data(lights.point_attenuation[:]))
+    gl.Uniform1f(uniforms.point_near, lights.near)
+    gl.Uniform1f(uniforms.point_far, lights.far)
+
+    gl.ActiveTexture(gl.TEXTURE0 + SUN_SHADOW_TEXTURE_UNIT)
+    gl.BindTexture(gl.TEXTURE_2D, lights.sun_shadow_map)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.Uniform1i(uniforms.sun_shadow_map, SUN_SHADOW_TEXTURE_UNIT)
+
+    gl.ActiveTexture(gl.TEXTURE0 + POINT_SHADOW_TEXTURE_UNIT)
+    gl.BindTexture(gl.TEXTURE_CUBE_MAP, lights.point_shadow_map)
+    gl.Uniform1i(uniforms.point_shadow_map, POINT_SHADOW_TEXTURE_UNIT)
 }
 
 bind_object :: proc(obj: Object_Gpu, uniforms: ^Uniforms) {
@@ -242,6 +380,28 @@ bind_object :: proc(obj: Object_Gpu, uniforms: ^Uniforms) {
     model := linalg.MATRIX4F32_IDENTITY
     flat_model := linalg.matrix_flatten(model)
     gl.UniformMatrix4fv(uniforms.model, 1, false, raw_data(flat_model[:]))
+}
+
+debug_draw :: proc(center: [2]f32, size: [2]f32, tex: u32, uniforms: ^Debug_Uniforms, debug_vao: u32, debug_program: u32) {
+    center := center
+    size := size
+
+    gl.Disable(gl.DEPTH_TEST)
+    defer gl.Enable(gl.DEPTH_TEST)
+
+    gl.UseProgram(debug_program)
+    gl.Uniform2fv(uniforms.center, 1, raw_data(center[:]))
+    gl.Uniform2fv(uniforms.size, 1, raw_data(size[:]))
+
+    gl.ActiveTexture(gl.TEXTURE0)
+    gl.BindTexture(gl.TEXTURE_2D, tex)
+    gl.Uniform1i(uniforms.tex, 0)
+
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+
+    gl.BindVertexArray(debug_vao)
+    gl.DrawArrays(gl.TRIANGLES, 0, 6)
 }
 
 Camera_Controls :: struct {
@@ -400,15 +560,32 @@ application :: proc() -> Maybe(string) {
 
     fmt.printfln("Compiling shaders")
 
-    shaders := common.compile_shader_program({
+    object_shaders := common.compile_shader_program({
         vertex_path = "homework2/object.vert",
         fragment_path = "homework2/object.frag",
     }) or_return
-    defer common.destroy_shader_program(shaders)
-    object_program := shaders.program
+    defer common.destroy_shader_program(object_shaders)
+    object_program := object_shaders.program
     object_program_uniforms := Uniforms{}
-
     common.get_uniform_locations(object_program, &object_program_uniforms, ignore_missing = true)
+
+    shadow_shaders := common.compile_shader_program({
+        vertex_path = "homework2/shadow.vert",
+        fragment_path = "homework2/shadow.frag",
+    }) or_return
+    defer common.destroy_shader_program(shadow_shaders)
+    shadow_program := shadow_shaders.program
+    shadow_program_uniforms := Uniforms{}
+    common.get_uniform_locations(shadow_program, &shadow_program_uniforms, ignore_missing = true)
+
+    debug_shaders := common.compile_shader_program({
+        vertex_path = "homework2/debug.vert",
+        fragment_path = "homework2/debug.frag",
+    }) or_return
+    defer common.destroy_shader_program(debug_shaders)
+    debug_program := debug_shaders.program
+    debug_program_uniforms := Debug_Uniforms{}
+    common.get_uniform_locations(debug_program, &debug_program_uniforms)
 
     fmt.printfln("Finished compiling shaders")
 
@@ -416,6 +593,9 @@ application :: proc() -> Maybe(string) {
 
     gl.Enable(gl.DEPTH_TEST)
     gl.Enable(gl.CULL_FACE)
+
+    debug_vao: u32
+    gl.GenVertexArrays(1, &debug_vao)
 
     /////////////////////////////////
 
@@ -436,12 +616,15 @@ application :: proc() -> Maybe(string) {
 
     lights := Lights{
         ambient = {0.1, 0.1, 0.1},
-        sun_direction = {0.5, 0.5, 0.5},
+        sun_direction = linalg.normalize([3]f32{0.5, 0.5, 0.5}),
         sun_color = {1, 1, 0.8},
         point_position = {2, 3, 0},
         point_color = {5, 0, 5},
         point_attenuation = [3]f32{1, 0, 1000.0 / sqr(aabb_diagonal(scene_aabb))},
+        near = 0.1,
+        far = aabb_diagonal(scene_aabb) * 1.5,
     }
+    init_lights(&lights)
 
     speed: f32 = linalg.length(scene_aabb.max - scene_aabb.min) * 0.1
     SENSITIVITY :: 0.01
@@ -457,6 +640,7 @@ application :: proc() -> Maybe(string) {
 
     mouse_down: bit_set[1..=2]
 
+    paused := false
     running := true
     for running {
         for event: sdl.Event; sdl.PollEvent(&event); {
@@ -473,6 +657,8 @@ application :: proc() -> Maybe(string) {
                     #partial switch event.key.keysym.sym {
                         case .ESCAPE:
                             running = false
+                        case .P:
+                            paused = !paused
                     }
                     button_down[event.key.keysym.sym] = true
                 case .KEYUP:
@@ -504,7 +690,7 @@ application :: proc() -> Maybe(string) {
         current_time := timelib.now()
         defer last_frame_start = current_time
         dt := cast(f32)timelib.duration_seconds(timelib.diff(last_frame_start, current_time))
-        time += dt
+        if !paused do time += dt
 
         ///////////////////////////////////
 
@@ -519,24 +705,52 @@ application :: proc() -> Maybe(string) {
 
         camera = compute_camera(camera_controls, dimensions)
 
-        fmt.printfln("Camera: pos=%v, direction=%v", camera.position, camera.forward)
+        ///////////////////////////////////
+
+        lights.sun_direction = linalg.quaternion128_mul_vector3(
+            linalg.quaternion_from_pitch_yaw_roll(0, time * 1.0, 0),
+            linalg.normalize([3]f32{0.2, 0.5, 0.2}),
+        )
+
+        if button_down[.L] do lights.point_position = camera.position
 
         ///////////////////////////////////
+
+        prepare_object_shader_program(shadow_program, &shadow_program_uniforms)
+
+        for i in 0..<7 {
+            bind_shadow_map(&lights, &shadow_program_uniforms, i, scene_aabb)
+            gl.ClearColor(1.0, 1.0, 0.0, 0.0)
+            gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+
+            for object in gpu_objects {
+                bind_object(object, &shadow_program_uniforms)
+                bind_material(gpu_materials[object.material_id], &shadow_program_uniforms)
+                gl.DrawElements(gl.TRIANGLES, object.vertex_count, gl.UNSIGNED_INT, nil)
+            }
+        }
+
+        ///////////////////////////////////
+
+        prepare_object_shader_program(object_program, &object_program_uniforms)
+        gl.Viewport(0, 0, dimensions.x, dimensions.y)
 
         gl.ClearColor(0.2, 0.2, 0.2, 0.0)
         gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
-        prepare_object_shader_program(object_program, &object_program_uniforms)
-
         bind_lights(lights, &object_program_uniforms)
         bind_camera(camera, &object_program_uniforms)
 
-        for object, i in gpu_objects {
+        for object in gpu_objects {
             bind_material(gpu_materials[object.material_id], &object_program_uniforms)
             bind_object(object, &object_program_uniforms)
 
             gl.DrawElements(gl.TRIANGLES, object.vertex_count, gl.UNSIGNED_INT, nil)
         }
+
+        ///////////////////////////////////
+
+        debug_draw({-0.8, -0.8}, {0.4, 0.4}, lights.sun_shadow_map, &debug_program_uniforms, debug_vao, debug_program)
 
         sdl.GL_SwapWindow(window)
     }
