@@ -13,6 +13,10 @@ import "core:math"
 import "core:unicode"
 import "core:math/linalg"
 
+fix_slashes :: proc(path: string) -> (string, bool) {
+    return strings.replace(path, "\\", "/", -1)
+}
+
 Wavefront_Group :: struct {
     start: int,
     end: int,
@@ -177,6 +181,9 @@ read_int :: proc(r: ^bufio.Reader) -> (int, Maybe(string)) {
 }
 
 read_material_file :: proc(path: string, lib: ^map[string]int, materials: ^[dynamic]Material_Data) -> Maybe(string) {
+    directory := filepath.dir(path)
+    defer delete(directory)
+
     file_handle, file_open_err := os.open(path)
     if file_open_err != nil do return fmt.tprintf("Failed to open file: %v", path)
     defer os.close(file_handle)
@@ -221,7 +228,9 @@ read_material_file :: proc(path: string, lib: ^map[string]int, materials: ^[dyna
             current_material.albedo = [3]f32{cr, cg, cb}
         } else if command == "map_Ka" {
             skip_whitespace(r)
-            current_material.albedo_texture = strings.clone(read_line_temp(r))
+            rel_path, allocates := fix_slashes(read_line_temp(r))
+            current_material.albedo_texture = filepath.join({directory, rel_path})
+            if allocates do delete(rel_path)
         } else if command == "d" {
             d := read_f32(r) or_return
             skip_whitespace(r)
@@ -231,7 +240,9 @@ read_material_file :: proc(path: string, lib: ^map[string]int, materials: ^[dyna
             current_material.transparency = d
         } else if command == "map_d" {
             skip_whitespace(r)
-            current_material.transparency_texture = strings.clone(read_line_temp(r))
+            rel_path, allocates := fix_slashes(read_line_temp(r))
+            current_material.transparency_texture = filepath.join({directory, rel_path})
+            if allocates do delete(rel_path)
         } else if command == "Ks" {
             ksr := read_f32(r) or_return
             skip_whitespace(r)
@@ -379,7 +390,10 @@ read_obj_file :: proc(path: string) -> (data: Wavefront_Obj_Data, error: Maybe(s
             append(&raw_groups, Raw_Group{len(triangles), strings.clone(name, context.temp_allocator), true})
         } else if command == "mtllib" {
             skip_whitespace(r)
-            lib_path, path_error := filepath.join({directory, read_line_temp(r)})
+
+            rel_path, allocates := fix_slashes(read_line_temp(r))
+            lib_path, path_error := filepath.join({directory, rel_path})
+            if allocates do delete(rel_path)
             if path_error != nil {
                 return data, fmt.tprintf("Failed to resolve material lib path: %v", path_error)
             }

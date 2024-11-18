@@ -6,3 +6,7 @@ dynamic_into_slice :: proc(data: [dynamic]$T) -> []T {
     delete(data)
     return result
 }
+
+sqr :: proc(x: $T) -> T {
+    return x * x
+}

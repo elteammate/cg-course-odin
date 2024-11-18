@@ -132,7 +132,7 @@
         {
             "label": "odin: Run Homework2",
             "type": "shell",
-            "command": "odin run homework2 -debug -- homework2/models/cube/cube.obj",
+            "command": "odin run homework2 -debug -- homework2/models/sponza/sponza.obj",
             "presentation": {
                 "clear": true
             },
