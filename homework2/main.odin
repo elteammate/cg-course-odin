@@ -24,7 +24,7 @@ TRANSPARENCY_TEXTURE_UNIT :: 1
 SUN_SHADOW_TEXTURE_UNIT :: 2
 POINT_SHADOW_TEXTURE_UNIT :: 3
 
-SHADOW_BIAS :: 1e-3
+SHADOW_BIAS :: 1e-2
 
 Vertex :: struct {
     position: [3]f32,
@@ -36,6 +36,7 @@ Material_Gpu :: struct {
     id: int,
     albedo: [3]f32,
     albedo_texture: u32,
+    use_albedo_for_transparency: bool,
     transparency: f32,
     transparency_texture: u32,
     glossiness: [3]f32,
@@ -64,6 +65,7 @@ Uniforms :: struct {
 
     albedo, albedo_tex, use_albedo_tex,
     transparency_tex, use_transparency_tex,
+    use_albedo_for_transparency,
     glossiness, power,
 
     camera_position, view_direction,
@@ -71,7 +73,7 @@ Uniforms :: struct {
     ambient,
     sun_direction, sun_color, sun_shadow_map, sun_transform,
     point_position, point_color, point_attenuation, point_far, point_near, point_shadow_map,
-    shadow_bias,
+    shadow_bias, is_point,
 
     dummy: i32
 }
@@ -170,19 +172,28 @@ ALBEDO_TEXTURE_CACHE: map[string]u32
 TRANSPARENCY_TEXTURE_CACHE: map[string]u32
 
 send_material_to_gpu :: proc(mat: ^Material_Data) -> (m: Material_Gpu, error: Maybe(string)) {
-    if tex, present := mat.albedo_texture.?; present {
+    if tex, present := mat.albedo_texture.?; present && tex == mat.transparency_texture {
         m.albedo_texture = ALBEDO_TEXTURE_CACHE[tex]
         if m.albedo_texture == 0 {
-            m.albedo_texture = load_texture(tex) or_return
+            m.albedo_texture = load_texture(tex, components = 4) or_return
             ALBEDO_TEXTURE_CACHE[tex] = m.albedo_texture
         }
-    }
+        m.use_albedo_for_transparency = true
+    } else {
+        if tex, present := mat.albedo_texture.?; present {
+            m.albedo_texture = ALBEDO_TEXTURE_CACHE[tex]
+            if m.albedo_texture == 0 {
+                m.albedo_texture = load_texture(tex, components = 3) or_return
+                ALBEDO_TEXTURE_CACHE[tex] = m.albedo_texture
+            }
+        }
 
-    if tex, present := mat.transparency_texture.?; present {
-        m.transparency_texture = TRANSPARENCY_TEXTURE_CACHE[tex]
-        if m.transparency_texture == 0 {
-            m.transparency_texture = load_texture(tex, components = 1) or_return
-            TRANSPARENCY_TEXTURE_CACHE[tex] = m.transparency_texture
+        if tex, present := mat.transparency_texture.?; present {
+            m.transparency_texture = TRANSPARENCY_TEXTURE_CACHE[tex]
+            if m.transparency_texture == 0 {
+                m.transparency_texture = load_texture(tex, components = 1) or_return
+                TRANSPARENCY_TEXTURE_CACHE[tex] = m.transparency_texture
+            }
         }
     }
 
@@ -217,6 +228,7 @@ bind_material :: proc(mat: Material_Gpu, uniforms: ^Uniforms) {
 
     use_transparency := mat.transparency_texture != 0
     gl.Uniform1i(uniforms.use_transparency_tex, cast(i32)use_transparency)
+    gl.Uniform1i(uniforms.use_albedo_for_transparency, cast(i32)mat.use_albedo_for_transparency)
     if use_transparency {
         gl.ActiveTexture(gl.TEXTURE0 + TRANSPARENCY_TEXTURE_UNIT)
         gl.BindTexture(gl.TEXTURE_2D, mat.transparency_texture)
@@ -329,6 +341,7 @@ bind_shadow_map :: proc(lights: ^Lights, uniforms: ^Uniforms, i: int, scene_aabb
 
         flat_transform := linalg.matrix_flatten(transform)
         gl.UniformMatrix4fv(uniforms.transform, 1, false, raw_data(flat_transform[:]))
+        gl.Uniform1i(uniforms.is_point, 0)
 
         gl.Viewport(0, 0, SUN_SHADOW_MAP_SIZE, SUN_SHADOW_MAP_SIZE)
         gl.BindFramebuffer(gl.FRAMEBUFFER, lights.sun_shadow_fbo)
@@ -347,6 +360,8 @@ bind_shadow_map :: proc(lights: ^Lights, uniforms: ^Uniforms, i: int, scene_aabb
 
         flat_transform := linalg.matrix_flatten(transform)
         gl.UniformMatrix4fv(uniforms.transform, 1, false, raw_data(flat_transform[:]))
+        gl.Uniform1i(uniforms.is_point, 1)
+        gl.Uniform3fv(uniforms.point_position, 1, raw_data(lights.point_position[:]))
 
         gl.Viewport(0, 0, POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE)
         gl.BindFramebuffer(gl.FRAMEBUFFER, lights.point_shadow_fbos[i])
@@ -370,11 +385,13 @@ bind_lights :: proc(lights: Lights, uniforms: ^Uniforms) {
     gl.ActiveTexture(gl.TEXTURE0 + SUN_SHADOW_TEXTURE_UNIT)
     gl.BindTexture(gl.TEXTURE_2D, lights.sun_shadow_map)
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
     gl.Uniform1i(uniforms.sun_shadow_map, SUN_SHADOW_TEXTURE_UNIT)
 
     gl.ActiveTexture(gl.TEXTURE0 + POINT_SHADOW_TEXTURE_UNIT)
     gl.BindTexture(gl.TEXTURE_CUBE_MAP, lights.point_shadow_map)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
     gl.Uniform1i(uniforms.point_shadow_map, POINT_SHADOW_TEXTURE_UNIT)
 }
 
@@ -619,7 +636,7 @@ application :: proc() -> Maybe(string) {
     camera := compute_camera(camera_controls, dimensions)
 
     lights := Lights{
-        ambient = {0.1, 0.1, 0.1},
+        ambient = {0.3, 0.3, 0.3},
         sun_direction = linalg.normalize([3]f32{0.5, 0.5, 0.5}),
         sun_color = {1, 1, 0.8},
         point_position = {2, 3, 0},
@@ -646,6 +663,8 @@ application :: proc() -> Maybe(string) {
 
     paused := false
     running := true
+    debug := true
+    move_camera := true
     for running {
         for event: sdl.Event; sdl.PollEvent(&event); {
             #partial switch event.type {
@@ -663,6 +682,10 @@ application :: proc() -> Maybe(string) {
                             running = false
                         case .P:
                             paused = !paused
+                        case .V:
+                            debug = !debug
+                        case .M:
+                            move_camera = !move_camera
                     }
                     button_down[event.key.keysym.sym] = true
                 case .KEYUP:
@@ -700,23 +723,32 @@ application :: proc() -> Maybe(string) {
 
         camera_controls.pitch = clamp(camera_controls.pitch, -math.PI / 2 + 0.01, math.PI / 2 - 0.01)
 
-        if button_down[.W] do camera_controls.position += camera.forward * dt * speed
-        if button_down[.S] do camera_controls.position -= camera.forward * dt * speed
+        forward := -linalg.cross(camera.right, camera.up)
+        if button_down[.W] do camera_controls.position += forward * dt * speed
+        if button_down[.S] do camera_controls.position -= forward * dt * speed
         if button_down[.D] do camera_controls.position += camera.right * dt * speed
         if button_down[.A] do camera_controls.position -= camera.right * dt * speed
         if button_down[.SPACE] do camera_controls.position += camera.up * dt * speed
         if button_down[.LSHIFT] do camera_controls.position -= camera.up * dt * speed
+        if button_down[.Y] do speed *= math.pow(2.0, dt)
+        if button_down[.U] do speed /= math.pow(2.0, dt)
 
         camera = compute_camera(camera_controls, dimensions)
 
         ///////////////////////////////////
 
         lights.sun_direction = linalg.quaternion128_mul_vector3(
-            linalg.quaternion_from_pitch_yaw_roll(0, time * 1.0, 0),
+            linalg.quaternion_from_pitch_yaw_roll(0, time * 0.3, 0),
             linalg.normalize([3]f32{0.2, 0.5, 0.2}),
         )
 
-        if button_down[.L] do lights.point_position = camera.position
+        scene_size := aabb_diagonal(scene_aabb)
+        if move_camera {
+            lights.point_position = camera.position + 
+                [3]f32{math.sin(time * 0.5), math.sin(time * 0.4), math.sin(time * 0.3)} * scene_size * 0.03
+        } else if button_down[.L] {
+            lights.point_position = camera.position
+        } 
 
         ///////////////////////////////////
 
@@ -754,7 +786,10 @@ application :: proc() -> Maybe(string) {
 
         ///////////////////////////////////
 
-        debug_draw({-0.8, -0.8}, {0.4, 0.4}, lights.sun_shadow_map, &debug_program_uniforms, debug_vao, debug_program)
+        if debug {
+            debug_draw({-0.8, -0.8}, {0.4, 0.4}, lights.sun_shadow_map, &debug_program_uniforms, debug_vao, debug_program)
+            debug_draw({-0.4, -0.8}, {0.4, 0.4}, gpu_materials[1].albedo_texture, &debug_program_uniforms, debug_vao, debug_program)
+        }
 
         sdl.GL_SwapWindow(window)
     }

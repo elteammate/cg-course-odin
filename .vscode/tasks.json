@@ -139,6 +139,24 @@
             "problemMatcher": []
         },
         {
+            "label": "odin: Run Homework2 (rungholt)",
+            "type": "shell",
+            "command": "odin run homework2 -debug -- homework2/models/rungholt/house.obj",
+            "presentation": {
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "odin: Run Homework2 (rungholt big)",
+            "type": "shell",
+            "command": "odin run homework2 -o:aggressive -- homework2/models/rungholt/rungholt.obj",
+            "presentation": {
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+        {
             "label": "odin: Run Homework2 and sanitize",
             "type": "shell",
             "command": "odin run homework2 -sanitize:address -debug -- homework2/models/sponza/sponza.obj",

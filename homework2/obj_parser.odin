@@ -195,6 +195,7 @@ read_material_file :: proc(path: string, lib: ^map[string]int, materials: ^[dyna
     bufio.reader_init(r, stream)
 
     current_material: Material_Data
+    current_material.transparency = 1.0
 
     for peek_byte(r) != 0 {
         command := read_word_temp(r)
@@ -216,6 +217,7 @@ read_material_file :: proc(path: string, lib: ^map[string]int, materials: ^[dyna
             current_material = Material_Data{
                 id = len(lib),
                 name = strings.clone(name),
+                transparency = 1.0,
             }
         } else if command == "Ka" {
             cr := read_f32(r) or_return
@@ -363,9 +365,9 @@ read_obj_file :: proc(path: string) -> (data: Wavefront_Obj_Data, error: Maybe(s
                 expect_byte(r, '/') or_return
                 n_index = read_int(r) or_return
 
-                if v_index < 0 { v_index = len(vertices) + v_index }
-                if t_index < 0 { t_index = len(texcoords) + t_index }
-                if n_index < 0 { n_index = len(normals) + n_index }
+                if v_index < 0 { v_index = len(vertices) + v_index + 1 }
+                if t_index < 0 { t_index = len(texcoords) + t_index + 1 }
+                if n_index < 0 { n_index = len(normals) + n_index + 1 }
 
                 if i == 0 {
                     first = [3]int{v_index, t_index, n_index} - 1

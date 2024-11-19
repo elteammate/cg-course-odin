@@ -5,6 +5,7 @@ uniform vec3 albedo;
 uniform sampler2D albedo_tex;
 
 uniform bool use_transparency_tex;
+uniform bool use_albedo_for_transparency;
 uniform sampler2D transparency_tex;
 
 uniform vec3 glossiness;
@@ -41,7 +42,11 @@ float diffuse_fac(vec3 direction) {
 
 vec3 specular_fac(vec3 direction) {
     vec3 reflected_direction = 2.0 * dot(normal, direction) * normal - direction;
-    return glossiness * pow(max(0.0, dot(reflected_direction, normalize(camera_position - position))), power);
+    if (power == 0.0) {
+        return glossiness * pow(max(0.0, dot(reflected_direction, normalize(camera_position - position))), power);
+    } else {
+        return vec3(0.0);
+    }
 }
 
 const float DELTA = 0.125;
@@ -56,42 +61,46 @@ float shadow_fac(sampler2D shadow_map, vec4 shadow_pos) {
     if (cheb < DELTA) {
         cheb = 0.0;
     } else {
-        cheb = (cheb - DELTA) / (1 - DELTA);
+        cheb = (cheb - DELTA) / (1.0 - DELTA);
     }
     return (z < mu + shadow_bias) ? 1.0 : cheb;
 }
 
-float cubemap_shadow_fac(samplerCube shadow_map, vec4 shadow_pos) {
-    vec2 data = texture(shadow_map, shadow_pos.xyz).rg;
+float cubemap_shadow_fac(samplerCube shadow_map, vec3 point_light_vec) {
+    vec2 data = texture(shadow_map, -point_light_vec).rg;
 
     float mu = data.r;
     float sigma = data.g - mu * mu;
-    float z = shadow_pos.w;
+    float z = length(point_light_vec);
     float cheb = sigma / (sigma + (z - mu) * (z - mu));
     if (cheb < DELTA) {
         cheb = 0.0;
     } else {
-        cheb = (cheb - DELTA) / (1 - DELTA);
+        cheb = (cheb - DELTA) / (1.0 - DELTA);
     }
-    return (z < mu + shadow_bias) ? 1.0 : cheb;
+    return (z < mu + shadow_bias * (z + 1.0)) ? 1.0 : cheb;
 }
 
 void main() {
+    vec2 texcoord = vec2(texcoord.x, 1.0 - texcoord.y);
     float transparency = 1.0;
     if (use_transparency_tex) {
         transparency = texture(transparency_tex, texcoord).r;
     }
 
-    if (transparency < 0.5) {
-        discard;
-    }
-
     vec3 l_albedo;
 
     if (use_albedo_tex) {
-        l_albedo = texture(albedo_tex, texcoord).rgb;
+        vec4 tex = texture(albedo_tex, texcoord);
+        l_albedo = tex.rgb;
+        if (use_albedo_for_transparency) {
+            transparency = tex.a;
+        }
     } else {
         l_albedo = albedo;
+    }
+    if (transparency < 0.5) {
+        discard;
     }
 
     vec4 sun_shadow_pos = sun_transform * vec4(position, 1.0);
@@ -99,12 +108,12 @@ void main() {
     sun_shadow_pos = sun_shadow_pos * 0.5 + 0.5;
 
     bool in_sun_shadow_texture = (
-        sun_shadow_pos.x > 0.0 &&
-        sun_shadow_pos.x < 1.0 &&
-        sun_shadow_pos.y > 0.0 &&
-        sun_shadow_pos.y < 1.0 &&
-        sun_shadow_pos.z > 0.0 &&
-        sun_shadow_pos.z < 1.0
+        sun_shadow_pos.x >= 0.0 &&
+        sun_shadow_pos.x <= 1.0 &&
+        sun_shadow_pos.y >= 0.0 &&
+        sun_shadow_pos.y <= 1.0 &&
+        sun_shadow_pos.z >= 0.0 &&
+        sun_shadow_pos.z <= 1.0
     );
 
     float sun_shadow_factor = in_sun_shadow_texture ? shadow_fac(sun_shadow_map, sun_shadow_pos) : 1.0;
@@ -115,11 +124,7 @@ void main() {
     vec3 point_light_direction = point_light_vec / point_light_dist;
     vec3 point_attenuation = point_attenuation * vec3(1, point_light_dist, point_light_dist2);
     float point_fraction = 1.0 / (point_attenuation.x + point_attenuation.y + point_attenuation.z);
-
-    float point_light_dist_l_inf = max(abs(point_light_vec.x), max(abs(point_light_vec.y), abs(point_light_vec.z)));
-    float w = (point_light_dist_l_inf - point_near) / (point_far - point_near);
-    vec4 point_shadow_pos = vec4(-point_light_vec, w);
-    float point_shadow_factor = w < 1.0 && w > 0.0 ? cubemap_shadow_fac(point_shadow_map, point_shadow_pos) : 0.0;
+    float point_shadow_factor = cubemap_shadow_fac(point_shadow_map, point_light_vec);
 
     vec3 color = l_albedo * (
         ambient +
@@ -134,5 +139,5 @@ void main() {
     );
 
     out_color = vec4(color, 1.0);
-    // out_color = vec4(texture(point_shadow_map, camera_position - position).rgb, 1.0);
+    // out_color = vec4(texture(point_shadow_map, position - camera_position).rgb * 0.001, 1.0);
 }

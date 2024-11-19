@@ -2,8 +2,11 @@
 
 uniform bool use_transparency_tex;
 uniform sampler2D transparency_tex;
+uniform bool is_point;
+uniform vec3 point_position;
 
 in vec2 texcoord;
+in vec3 position;
 
 layout (location = 0) out vec4 out_depth_info;
 
@@ -17,7 +20,7 @@ void main() {
         discard;
     }
 
-    float z = gl_FragCoord.z;
+    float z = is_point ? length(position - point_position) : gl_FragCoord.z;
     float dzdx = dFdx(z);
     float dzdy = dFdy(z);
     out_depth_info = vec4(z, z * z + (dzdx * dzdx + dzdy * dzdy) / 4.0, 0.0, 0.0);
