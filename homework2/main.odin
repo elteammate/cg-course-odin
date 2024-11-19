@@ -220,6 +220,7 @@ bind_material :: proc(mat: Material_Gpu, uniforms: ^Uniforms) {
     if use_transparency {
         gl.ActiveTexture(gl.TEXTURE0 + TRANSPARENCY_TEXTURE_UNIT)
         gl.BindTexture(gl.TEXTURE_2D, mat.transparency_texture)
+        gl.Uniform1i(uniforms.transparency_tex, TRANSPARENCY_TEXTURE_UNIT)
     }
 
     gl.Uniform3fv(uniforms.glossiness, 1, raw_data(mat.glossiness[:]))
@@ -327,8 +328,11 @@ bind_shadow_map :: proc(lights: ^Lights, uniforms: ^Uniforms, i: int, scene_aabb
         })
         lights.cached_sun_transform = transform
 
+        identity := linalg.MATRIX4F32_IDENTITY
         flat_transform := linalg.matrix_flatten(transform)
         gl.UniformMatrix4fv(uniforms.transform, 1, false, raw_data(flat_transform[:]))
+        gl.UniformMatrix4fv(uniforms.projection, 1, false, raw_data(flat_transform[:]))
+        gl.UniformMatrix4fv(uniforms.view, 1, false, &identity[0, 0])
 
         gl.Viewport(0, 0, SUN_SHADOW_MAP_SIZE, SUN_SHADOW_MAP_SIZE)
         gl.BindFramebuffer(gl.FRAMEBUFFER, lights.sun_shadow_fbo)
@@ -336,17 +340,20 @@ bind_shadow_map :: proc(lights: ^Lights, uniforms: ^Uniforms, i: int, scene_aabb
         i := i - 1
         side := CUBEMAP_SIDES[i]
 
-        transform := linalg.matrix4_perspective_f32(
+        projection := linalg.matrix4_perspective_f32(
             math.PI / 2, 1, lights.near, lights.far,
-        ) * linalg.matrix4_look_at_f32(
+        )
+        view := linalg.matrix4_look_at_f32(
             lights.point_position,
             lights.point_position + CUBEMAP_FACE_ORIENTATIONS[i][0],
             CUBEMAP_FACE_ORIENTATIONS[i][1],
         )
+        transform := projection * view
         lights.cached_point_transform = transform
 
-        flat_transform := linalg.matrix_flatten(transform)
-        gl.UniformMatrix4fv(uniforms.transform, 1, false, raw_data(flat_transform[:]))
+        gl.UniformMatrix4fv(uniforms.transform, 1, false, &transform[0, 0])
+        gl.UniformMatrix4fv(uniforms.projection, 1, false, &projection[0, 0])
+        gl.UniformMatrix4fv(uniforms.view, 1, false, &view[0, 0])
 
         gl.Viewport(0, 0, POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE)
         gl.BindFramebuffer(gl.FRAMEBUFFER, lights.point_shadow_fbos[i])
@@ -707,6 +714,8 @@ application :: proc() -> Maybe(string) {
         if button_down[.SPACE] do camera_controls.position += camera.up * dt * speed
         if button_down[.LSHIFT] do camera_controls.position -= camera.up * dt * speed
 
+        if 2 in mouse_down do camera_controls.position += camera.forward * dt * speed
+
         camera = compute_camera(camera_controls, dimensions)
 
         ///////////////////////////////////
@@ -724,8 +733,12 @@ application :: proc() -> Maybe(string) {
 
         for i in 0..<7 {
             bind_shadow_map(&lights, &shadow_program_uniforms, i, scene_aabb)
-            gl.ClearColor(1.0, 1.0, 0.0, 0.0)
-            gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+            if i <= 1 {
+                gl.ClearColor(1.0, 1.0, 0.0, 0.0)
+                gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+            } else {
+                gl.Clear(gl.DEPTH_BUFFER_BIT)
+            }
 
             for object in gpu_objects {
                 bind_object(object, &shadow_program_uniforms)
@@ -744,6 +757,9 @@ application :: proc() -> Maybe(string) {
 
         bind_lights(lights, &object_program_uniforms)
         bind_camera(camera, &object_program_uniforms)
+        // gl.UniformMatrix4fv(object_program_uniforms.projection, 1, false, &lights.cached_point_transform[0, 0])
+        // id := linalg.MATRIX4F32_IDENTITY
+        // gl.UniformMatrix4fv(object_program_uniforms.view, 1, false, &id[0, 0])
 
         for object in gpu_objects {
             bind_material(gpu_materials[object.material_id], &object_program_uniforms)
