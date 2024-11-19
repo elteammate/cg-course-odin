@@ -26,6 +26,8 @@ POINT_SHADOW_TEXTURE_UNIT :: 3
 
 SHADOW_BIAS :: 1e-2
 
+rect_vao: u32
+
 Vertex :: struct {
     position: [3]f32,
     normal: [3]f32,
@@ -208,7 +210,7 @@ send_material_to_gpu :: proc(mat: ^Material_Data) -> (m: Material_Gpu, error: Ma
 
 prepare_object_shader_program :: proc(program: u32, uniforms: ^Uniforms) {
     gl.UseProgram(program)
-    gl.BindFramebuffer(gl.FRAMEBUFFER, 0)
+    gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, 0)
     gl.Uniform1i(uniforms.albedo_tex, TEXTURE_UNIT_ALBEDO)
     gl.Uniform1f(uniforms.shadow_bias, SHADOW_BIAS)
     gl.Uniform1i(uniforms.transparency_tex, TRANSPARENCY_TEXTURE_UNIT)
@@ -287,9 +289,9 @@ init_lights :: proc(lights: ^Lights) {
     gl.RenderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, SUN_SHADOW_MAP_SIZE, SUN_SHADOW_MAP_SIZE)
 
     gl.GenFramebuffers(1, &lights.sun_shadow_fbo)
-    gl.BindFramebuffer(gl.FRAMEBUFFER, lights.sun_shadow_fbo)
-    gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, lights.sun_shadow_map, 0)
-    gl.FramebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, lights.sun_shadow_rbo_depth)
+    gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, lights.sun_shadow_fbo)
+    gl.FramebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, lights.sun_shadow_map, 0)
+    gl.FramebufferRenderbuffer(gl.DRAW_FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, lights.sun_shadow_rbo_depth)
 
     gl.GenTextures(1, &lights.point_shadow_map)
     gl.BindTexture(gl.TEXTURE_CUBE_MAP, lights.point_shadow_map)
@@ -305,9 +307,9 @@ init_lights :: proc(lights: ^Lights) {
 
     gl.GenFramebuffers(6, raw_data(lights.point_shadow_fbos[:]))
     for i in 0..<6 {
-        gl.BindFramebuffer(gl.FRAMEBUFFER, lights.point_shadow_fbos[i])
-        gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, CUBEMAP_SIDES[i], lights.point_shadow_map, 0)
-        gl.FramebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, lights.point_shadow_depth)
+        gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, lights.point_shadow_fbos[i])
+        gl.FramebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, CUBEMAP_SIDES[i], lights.point_shadow_map, 0)
+        gl.FramebufferRenderbuffer(gl.DRAW_FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, lights.point_shadow_depth)
     }
 }
 
@@ -344,7 +346,7 @@ bind_shadow_map :: proc(lights: ^Lights, uniforms: ^Uniforms, i: int, scene_aabb
         gl.Uniform1i(uniforms.is_point, 0)
 
         gl.Viewport(0, 0, SUN_SHADOW_MAP_SIZE, SUN_SHADOW_MAP_SIZE)
-        gl.BindFramebuffer(gl.FRAMEBUFFER, lights.sun_shadow_fbo)
+        gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, lights.sun_shadow_fbo)
     } else {
         i := i - 1
         side := CUBEMAP_SIDES[i]
@@ -364,7 +366,7 @@ bind_shadow_map :: proc(lights: ^Lights, uniforms: ^Uniforms, i: int, scene_aabb
         gl.Uniform3fv(uniforms.point_position, 1, raw_data(lights.point_position[:]))
 
         gl.Viewport(0, 0, POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE)
-        gl.BindFramebuffer(gl.FRAMEBUFFER, lights.point_shadow_fbos[i])
+        gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, lights.point_shadow_fbos[i])
     }
 }
 
@@ -403,7 +405,7 @@ bind_object :: proc(obj: Object_Gpu, uniforms: ^Uniforms) {
     gl.UniformMatrix4fv(uniforms.model, 1, false, raw_data(flat_model[:]))
 }
 
-debug_draw :: proc(center: [2]f32, size: [2]f32, tex: u32, uniforms: ^Debug_Uniforms, debug_vao: u32, debug_program: u32) {
+debug_draw :: proc(center: [2]f32, size: [2]f32, tex: u32, uniforms: ^Debug_Uniforms, debug_program: u32) {
     center := center
     size := size
 
@@ -421,7 +423,7 @@ debug_draw :: proc(center: [2]f32, size: [2]f32, tex: u32, uniforms: ^Debug_Unif
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
 
-    gl.BindVertexArray(debug_vao)
+    gl.BindVertexArray(rect_vao)
     gl.DrawArrays(gl.TRIANGLES, 0, 6)
 }
 
@@ -507,6 +509,102 @@ bind_camera :: proc(cam: Camera, uniforms: ^Uniforms) {
     gl.UniformMatrix4fv(uniforms.projection, 1, false, &flat_projection[0])
     gl.Uniform3fv(uniforms.camera_position, 1, raw_data(cam.position[:]))
     gl.Uniform3fv(uniforms.view_direction, 1, raw_data(cam.forward[:]))
+}
+
+Blur_Pass_Uniforms :: struct {
+    center, size, tex, vertical, side: i32
+}
+
+Blur_Gpu :: struct {
+    fbo: u32,
+    temp_texture_2d: u32,
+    temp_texture_cube: u32,
+}
+
+configure_texture_for_blur :: proc(target: u32, texture: u32) {
+    gl.BindTexture(target, texture)
+    gl.TexParameteri(target, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.TexParameteri(target, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    if target != gl.TEXTURE_CUBE_MAP {
+        gl.TexParameteri(target, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+        gl.TexParameteri(target, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    }
+}
+
+init_blur_2d :: proc() -> (blur: Blur_Gpu) {
+    gl.GenFramebuffers(1, &blur.fbo)
+
+    gl.GenTextures(1, &blur.temp_texture_2d)
+    configure_texture_for_blur(gl.TEXTURE_2D, blur.temp_texture_2d)
+    gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RG32F, SUN_SHADOW_MAP_SIZE, SUN_SHADOW_MAP_SIZE, 0, gl.RGBA, gl.UNSIGNED_BYTE, nil)
+
+    gl.GenTextures(1, &blur.temp_texture_cube)
+    configure_texture_for_blur(gl.TEXTURE_2D, blur.temp_texture_cube)
+    gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RG32F, POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE, 0, gl.RGBA, gl.UNSIGNED_BYTE, nil)
+
+    return
+}
+
+run_blur_2d :: proc(program: u32, tex: u32, uniforms: ^Blur_Pass_Uniforms, blur: Blur_Gpu) {
+    gl.UseProgram(program)
+    gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, blur.fbo)
+    gl.Uniform2f(uniforms.center, 0, 0)
+    gl.Uniform2f(uniforms.size, 2, 2)
+
+    gl.Disable(gl.DEPTH_TEST)
+    defer gl.Enable(gl.DEPTH_TEST)
+
+    gl.Viewport(0, 0, SUN_SHADOW_MAP_SIZE, SUN_SHADOW_MAP_SIZE)
+
+    gl.FramebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, blur.temp_texture_2d, 0)
+
+    gl.ActiveTexture(gl.TEXTURE0)
+    gl.BindTexture(gl.TEXTURE_2D, tex)
+    configure_texture_for_blur(gl.TEXTURE_2D, tex)
+
+    gl.Uniform1i(uniforms.tex, 0)
+    gl.Uniform1i(uniforms.vertical, 0)
+
+    gl.BindVertexArray(rect_vao)
+    gl.DrawArrays(gl.TRIANGLES, 0, 6)
+
+    gl.FramebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0)
+    gl.BindTexture(gl.TEXTURE_2D, blur.temp_texture_2d)
+    gl.Uniform1i(uniforms.vertical, 1)
+
+    gl.DrawArrays(gl.TRIANGLES, 0, 6)
+}
+
+run_blur_cube :: proc(program_2d, program_cube: u32, tex: u32, uniforms: ^Blur_Pass_Uniforms, blur: Blur_Gpu, side: i32) {
+    gl.UseProgram(program_cube)
+    gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, blur.fbo)
+    gl.Uniform2f(uniforms.center, 0, 0)
+    gl.Uniform2f(uniforms.size, 2, 2)
+
+    gl.Disable(gl.DEPTH_TEST)
+    defer gl.Enable(gl.DEPTH_TEST)
+
+    gl.Viewport(0, 0, POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE)
+
+    gl.FramebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, blur.temp_texture_cube, 0)
+
+    gl.ActiveTexture(gl.TEXTURE0)
+    gl.BindTexture(gl.TEXTURE_CUBE_MAP, tex)
+    configure_texture_for_blur(gl.TEXTURE_CUBE_MAP, tex)
+
+    gl.Uniform1i(uniforms.tex, 0)
+    gl.Uniform1i(uniforms.side, side)
+
+    gl.BindVertexArray(rect_vao)
+    gl.DrawArrays(gl.TRIANGLES, 0, 6)
+
+    gl.UseProgram(program_2d)
+
+    gl.FramebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, CUBEMAP_SIDES[side], tex, 0)
+    gl.BindTexture(gl.TEXTURE_2D, blur.temp_texture_cube)
+    gl.Uniform1i(uniforms.vertical, 0)
+
+    gl.DrawArrays(gl.TRIANGLES, 0, 6)
 }
 
 application :: proc() -> Maybe(string) {
@@ -599,8 +697,26 @@ application :: proc() -> Maybe(string) {
     shadow_program_uniforms := Uniforms{}
     common.get_uniform_locations(shadow_program, &shadow_program_uniforms, ignore_missing = true)
 
+    blur_pass_2d_shaders := common.compile_shader_program({
+        vertex_path = "homework2/rect.vert",
+        fragment_path = "homework2/blur_pass_2d.frag",
+    }) or_return
+    defer common.destroy_shader_program(blur_pass_2d_shaders)
+    blur_pass_2d_program := blur_pass_2d_shaders.program
+    blur_pass_2d_program_uniforms := Blur_Pass_Uniforms{}
+    common.get_uniform_locations(blur_pass_2d_program, &blur_pass_2d_program_uniforms, ignore_missing = true)
+
+    blur_pass_cube_shaders := common.compile_shader_program({
+        vertex_path = "homework2/rect.vert",
+        fragment_path = "homework2/blur_pass_cube.frag",
+    }) or_return
+    defer common.destroy_shader_program(blur_pass_cube_shaders)
+    blur_pass_cube_program := blur_pass_cube_shaders.program
+    blur_pass_cube_program_uniforms := Blur_Pass_Uniforms{}
+    common.get_uniform_locations(blur_pass_cube_program, &blur_pass_cube_program_uniforms, ignore_missing = true)
+
     debug_shaders := common.compile_shader_program({
-        vertex_path = "homework2/debug.vert",
+        vertex_path = "homework2/rect.vert",
         fragment_path = "homework2/debug.frag",
     }) or_return
     defer common.destroy_shader_program(debug_shaders)
@@ -614,9 +730,11 @@ application :: proc() -> Maybe(string) {
 
     gl.Enable(gl.DEPTH_TEST)
     gl.Enable(gl.CULL_FACE)
+    gl.Enable(gl.TEXTURE_CUBE_MAP_SEAMLESS)
 
-    debug_vao: u32
-    gl.GenVertexArrays(1, &debug_vao)
+    gl.GenVertexArrays(1, &rect_vao)
+
+    blur := init_blur_2d()
 
     /////////////////////////////////
 
@@ -743,7 +861,7 @@ application :: proc() -> Maybe(string) {
         )
 
         scene_size := aabb_diagonal(scene_aabb)
-        if move_camera {
+        if move_camera && !paused {
             lights.point_position = camera.position + 
                 [3]f32{math.sin(time * 0.5), math.sin(time * 0.4), math.sin(time * 0.3)} * scene_size * 0.03
         } else if button_down[.L] {
@@ -768,6 +886,14 @@ application :: proc() -> Maybe(string) {
 
         ///////////////////////////////////
 
+        // fmt.printfln("Camera pos: %v, camera dir: %v", camera.position, camera.forward)
+        run_blur_2d(blur_pass_2d_program, lights.sun_shadow_map, &blur_pass_2d_program_uniforms, blur)
+        // for side in i32(1)..<2 {
+        //     run_blur_cube(blur_pass_2d_program, blur_pass_cube_program, lights.point_shadow_map, &blur_pass_2d_program_uniforms, blur, side)
+        // }
+
+        ///////////////////////////////////
+
         prepare_object_shader_program(object_program, &object_program_uniforms)
         gl.Viewport(0, 0, dimensions.x, dimensions.y)
 
@@ -787,8 +913,10 @@ application :: proc() -> Maybe(string) {
         ///////////////////////////////////
 
         if debug {
-            debug_draw({-0.8, -0.8}, {0.4, 0.4}, lights.sun_shadow_map, &debug_program_uniforms, debug_vao, debug_program)
-            debug_draw({-0.4, -0.8}, {0.4, 0.4}, gpu_materials[1].albedo_texture, &debug_program_uniforms, debug_vao, debug_program)
+            debug_draw({-0.8, -0.8}, {0.4, 0.4}, lights.sun_shadow_map, &debug_program_uniforms, debug_program)
+            debug_draw({-0.4, -0.8}, {0.4, 0.4}, gpu_materials[1].albedo_texture, &debug_program_uniforms, debug_program)
+            debug_draw({0.0, -0.8}, {0.4, 0.4}, blur.temp_texture_2d, &debug_program_uniforms, debug_program)
+            debug_draw({0.4, -0.8}, {0.4, 0.4}, blur.temp_texture_cube, &debug_program_uniforms, debug_program)
         }
 
         sdl.GL_SwapWindow(window)

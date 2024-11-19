@@ -67,7 +67,37 @@ float shadow_fac(sampler2D shadow_map, vec4 shadow_pos) {
 }
 
 float cubemap_shadow_fac(samplerCube shadow_map, vec3 point_light_vec) {
-    vec2 data = texture(shadow_map, -point_light_vec).rg;
+    float light_direction_inf_norm = max(
+        abs(point_light_vec.x),
+        max(
+            abs(point_light_vec.y),
+            abs(point_light_vec.z)
+        )
+    );
+    vec3 light_direction = -point_light_vec / light_direction_inf_norm;
+
+    const int N = 7;
+    float radius = 2.5;
+    vec2 sum = vec2(0.0);
+    float sum_w = 0.0;
+    for (int dx = -N; dx <= N; ++dx) {
+        for (int dy = -N; dy <= N; ++dy) {
+            vec2 offset_2d = vec2(dx, dy) / vec2(textureSize(shadow_map, 0));
+            vec3 offset;
+            if (abs(light_direction.x) > 0.999) {
+                offset = vec3(0.0, offset_2d);
+            } else if (abs(light_direction.y) > 0.999) {
+                offset = vec3(offset_2d.x, 0.0, offset_2d.y);
+            } else {
+                offset = vec3(offset_2d, 0.0);
+            }
+            float c = exp(-float(dx * dx + dy * dy) / (radius * radius));
+            sum += c * texture(shadow_map, light_direction + offset).rg;
+            sum_w += c;
+        }
+    }
+
+    vec2 data = sum / sum_w;
 
     float mu = data.r;
     float sigma = data.g - mu * mu;
