@@ -92,7 +92,7 @@ float cubemap_shadow_fac(samplerCube shadow_map, vec3 point_light_vec) {
                 offset = vec3(offset_2d, 0.0);
             }
             float c = exp(-float(dx * dx + dy * dy) / (radius * radius));
-            sum += c * texture(shadow_map, light_direction + offset).rg;
+            sum += c * texture(shadow_map, light_direction + offset * 2.0).rg;
             sum_w += c;
         }
     }

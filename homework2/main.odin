@@ -897,7 +897,7 @@ application :: proc() -> Maybe(string) {
         prepare_object_shader_program(object_program, &object_program_uniforms)
         gl.Viewport(0, 0, dimensions.x, dimensions.y)
 
-        gl.ClearColor(0.2, 0.2, 0.2, 0.0)
+        gl.ClearColor(0.7, 0.8, 1.0, 0.0)
         gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
         bind_lights(lights, &object_program_uniforms)
