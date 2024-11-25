@@ -71,8 +71,7 @@ configure_vao_attributes :: #force_inline proc($T: typeid) {
     location_pattern :: "location="
     fields := reflect.struct_fields_zipped(T)
     for i in 0..<len(fields) {
-        tag_value := reflect.struct_tag_lookup(fields[i].tag, "gl") or_else
-            panic("Attribute must have a 'gl' tag")
+        tag_value := reflect.struct_tag_lookup(fields[i].tag, "gl") or_continue
         assert(tag_value != "", "Attribute must have a non-empty 'gl' tag")
         index := strings.index(tag_value, location_pattern)
         if index == -1 do panic("Attribute must have a 'location' field in the 'gl' tag")

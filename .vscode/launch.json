@@ -20,7 +20,8 @@
             "name": "Launch this",
             "program": "${workspaceFolder}/${relativeFileDirname}.bin",
             "args": [],
-            "cwd": "${workspaceFolder}"
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "odin: Build This",
         },
     ]
 }

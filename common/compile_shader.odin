@@ -10,8 +10,10 @@ import gl "vendor:OpenGL"
 
 ShaderProgramInfo :: struct {
     vertex_source: Maybe(string),
+    geometry_source: Maybe(string),
     fragment_source: Maybe(string),
     vertex_path: Maybe(string),
+    geometry_path: Maybe(string),
     fragment_path: Maybe(string),
     include_sources: []string,
     include_paths: []string,
@@ -21,11 +23,13 @@ ShaderProgram :: struct {
     program: u32,
     vertex_shader: u32,
     fragment_shader: u32,
+    geometry_shader: u32,
 }
 
 destroy_shader_program :: proc(program: ShaderProgram) {
     gl.DeleteShader(program.vertex_shader)
     gl.DeleteShader(program.fragment_shader)
+    gl.DeleteShader(program.geometry_shader)
     gl.DeleteProgram(program.program)
 }
 
@@ -63,6 +67,7 @@ _compile_shader :: proc(
             "Error compiling %s: %s",
                 type == .VERTEX_SHADER ? "vertex shader" :
                 type == .FRAGMENT_SHADER ? "fragment shader" : 
+                type == .GEOMETRY_SHADER ? "geometry shader" : 
                 "unknown shader",
             string(infolog),
         )
@@ -114,9 +119,22 @@ compile_shader_program :: proc(program_info: ShaderProgramInfo) -> (result: Shad
         else if program_info.fragment_path != nil do delete(sa.pop_back(&sources))
     if err != nil do return
 
+    if source, present := program_info.geometry_source.?; present {
+        sa.append(&sources, source)
+    } else if path, present := program_info.geometry_path.?; present {
+        data, err := _read_string_from_file(path)
+        if err != nil do return result, err
+        sa.append(&sources, data)
+    }
+    result.geometry_shader, err = _compile_shader(&sources, .GEOMETRY_SHADER)
+    if program_info.geometry_source != nil do sa.pop_back(&sources)
+        else if program_info.geometry_path != nil do delete(sa.pop_back(&sources))
+    if err != nil do return
+
     result.program = gl.CreateProgram()
     gl.AttachShader(result.program, result.vertex_shader)
     gl.AttachShader(result.program, result.fragment_shader)
+    gl.AttachShader(result.program, result.geometry_shader)
     gl.LinkProgram(result.program)
 
     link_status: i32 = ---
