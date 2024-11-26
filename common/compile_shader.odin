@@ -119,14 +119,21 @@ compile_shader_program :: proc(program_info: ShaderProgramInfo) -> (result: Shad
         else if program_info.fragment_path != nil do delete(sa.pop_back(&sources))
     if err != nil do return
 
+    geometry_present := false
     if source, present := program_info.geometry_source.?; present {
         sa.append(&sources, source)
+        geometry_present = true
     } else if path, present := program_info.geometry_path.?; present {
         data, err := _read_string_from_file(path)
         if err != nil do return result, err
         sa.append(&sources, data)
+        geometry_present = true
     }
-    result.geometry_shader, err = _compile_shader(&sources, .GEOMETRY_SHADER)
+    if geometry_present {
+        result.geometry_shader, err = _compile_shader(&sources, .GEOMETRY_SHADER)
+    } else {
+        result.geometry_shader = 0
+    }
     if program_info.geometry_source != nil do sa.pop_back(&sources)
         else if program_info.geometry_path != nil do delete(sa.pop_back(&sources))
     if err != nil do return
@@ -134,7 +141,7 @@ compile_shader_program :: proc(program_info: ShaderProgramInfo) -> (result: Shad
     result.program = gl.CreateProgram()
     gl.AttachShader(result.program, result.vertex_shader)
     gl.AttachShader(result.program, result.fragment_shader)
-    gl.AttachShader(result.program, result.geometry_shader)
+    if geometry_present do gl.AttachShader(result.program, result.geometry_shader)
     gl.LinkProgram(result.program)
 
     link_status: i32 = ---
