@@ -20,7 +20,8 @@ void main() {
 
     vec3 world = (model * vec4(center, 1.0)).xyz;
     vec3 z = normalize(camera_position - world.xyz);
-    vec3 x = normalize(cross(vec3(1.0, z.y + floor(abs(z.x + z.x)), z.z), z));
+    // vec3 x = normalize(cross(vec3(1.0, z.y + floor(abs(z.x + z.x)), z.z), z));
+    vec3 x = normalize(cross(vec3(0.568374, 0.298576, 0.458673), z));
     vec3 y = normalize(cross(z, x));
 
     float cos_rotation = cos(rotation[0]);

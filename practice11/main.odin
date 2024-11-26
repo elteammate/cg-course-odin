@@ -44,11 +44,24 @@ load_texture :: proc(path: cstring) -> (result: u32) {
     return
 }
 
+sdf_sphere :: proc(center: [3]f32, r: f32, p: [3]f32) -> f32 {
+    return linalg.length(p - center) - r
+}
+
+sdf_octahedron :: proc(center: [3]f32, s: f32, p: [3]f32) -> f32 {
+    p := linalg.abs(p - center)
+    return (p.x + p.y + p.z - s) * 0.57735
+}
 
 sdf :: proc(p: [3]f32) -> f32 {
     return min(
-        linalg.length2(p - [3]f32{-0.3, 0.5, 0}) - 0.5,
-        linalg.length2(p - [3]f32{0.3, 0.5, 0}) - 0.5,
+        sdf_sphere({0.0, 0.5, 0}, 1.0, p),
+        // sdf_sphere({0.4, 0.5, 0}, 1.0, p),
+        // sdf_sphere({-0.4, 0.5, 0}, 1.0, p),
+        sdf_sphere({0.0, 0.5, 1.8}, 1.0, p),
+        sdf_sphere({0.0, 1.6, 1.4}, 0.6, p),
+        sdf_sphere({0.0, 1.6, 2.2}, 0.6, p),
+        sdf_octahedron({0.0, 1.5, 0}, 1.0, p),
     )
 }
 
@@ -118,10 +131,10 @@ application :: proc() -> Maybe(string) {
     }
     common.get_uniform_locations(shaders.program, &uniforms, ignore_missing = true)
 
-    MAX_PARTICLES :: 4096
+    MAX_PARTICLES :: 4096 * 10
     FRICTION: f32 = 0.1
-    DECAY: f32 = 0.7
-    PARTICLES_PER_SECOND: f32 = 300.0
+    DECAY: f32 = 0.85
+    PARTICLES_PER_SECOND: f32 = 300.0 * 5
 
     particles := make([dynamic]Particle, 0, MAX_PARTICLES)
     /*
