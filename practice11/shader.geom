@@ -19,10 +19,8 @@ void main() {
     mat4 transform = projection * view * model;
 
     vec3 world = (model * vec4(center, 1.0)).xyz;
-    vec3 z = camera_position - world.xyz;
-    vec3 x = cross(vec3(0.0, 1.0, 0.0), z);
-    float len_x = length(x);
-    x = len_x == 0.0 ? vec3(1.0, 0.0, 0.0) : x / len_x;
+    vec3 z = normalize(camera_position - world.xyz);
+    vec3 x = normalize(cross(vec3(1.0, z.y + floor(abs(z.x + z.x)), z.z), z));
     vec3 y = normalize(cross(z, x));
 
     float cos_rotation = cos(rotation[0]);
