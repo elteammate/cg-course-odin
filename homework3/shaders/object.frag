@@ -112,7 +112,6 @@ float cubemap_shadow_fac(samplerCube shadow_map, vec3 point_light_vec) {
 }
 
 void main() {
-    vec2 texcoord = vec2(texcoord.x, 1.0 - texcoord.y);
     float transparency = 1.0;
     if (use_transparency_tex) {
         transparency = texture(transparency_tex, texcoord).r;

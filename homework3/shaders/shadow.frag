@@ -14,7 +14,6 @@ in vec3 position;
 layout (location = 0) out vec4 out_depth_info;
 
 void main() {
-    vec2 texcoord = vec2(texcoord.x, 1.0 - texcoord.y);
     float transparency = 1.0;
     if (use_transparency_tex) {
         transparency = texture(transparency_tex, texcoord).r;

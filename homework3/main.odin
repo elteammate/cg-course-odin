@@ -113,14 +113,16 @@ send_object_to_gpu :: proc(object: ^Object) -> (o: Object_Gpu) {
 load_texture :: proc(
     path: string,
     components: int = 3,
-    mipmaps: bool = true,
+    mipmaps: enum {
+        None, SRGB, Linear,
+    } = .None,
     internal_format: i32 = gl.RGB8,
     min_filter: i32 = gl.LINEAR_MIPMAP_LINEAR,
     mag_filter: i32 = gl.LINEAR,
     wrap_s: i32 = gl.REPEAT,
     wrap_t: i32 = gl.REPEAT,
 ) -> (texture: u32, error: Maybe(string)) {
-    if mipmaps {
+    if mipmaps != .None {
         assert(
             min_filter == gl.LINEAR_MIPMAP_LINEAR ||
             min_filter == gl.NEAREST_MIPMAP_NEAREST ||
@@ -145,6 +147,7 @@ load_texture :: proc(
     defer delete(cpath, context.temp_allocator)
 
     width, height, n_channels: c.int
+    stb_img.set_flip_vertically_on_load(1)
     data := stb_img.load(cpath, &width, &height, &n_channels, c.int(components))
     if data == nil {
         return 0, fmt.tprintf("Failed to load texture %s", path)
@@ -163,7 +166,7 @@ load_texture :: proc(
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, min_filter)
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, mag_filter)
 
-    if mipmaps {
+    if mipmaps != .None {
         gl.GenerateMipmap(gl.TEXTURE_2D)
     }
 
@@ -177,7 +180,12 @@ send_material_to_gpu :: proc(mat: ^Material_Data) -> (m: Material_Gpu, error: Ma
     if tex, present := mat.albedo_texture.?; present && tex == mat.transparency_texture {
         m.albedo_texture = ALBEDO_TEXTURE_CACHE[tex]
         if m.albedo_texture == 0 {
-            m.albedo_texture = load_texture(tex, components = 4) or_return
+            m.albedo_texture = load_texture(
+                tex,
+                mipmaps = .SRGB,
+                internal_format = gl.SRGB8_ALPHA8,
+                components = 4,
+            ) or_return
             ALBEDO_TEXTURE_CACHE[tex] = m.albedo_texture
         }
         m.use_albedo_for_transparency = true
@@ -185,7 +193,12 @@ send_material_to_gpu :: proc(mat: ^Material_Data) -> (m: Material_Gpu, error: Ma
         if tex, present := mat.albedo_texture.?; present {
             m.albedo_texture = ALBEDO_TEXTURE_CACHE[tex]
             if m.albedo_texture == 0 {
-                m.albedo_texture = load_texture(tex, components = 3) or_return
+                m.albedo_texture = load_texture(
+                    tex,
+                    mipmaps = .SRGB,
+                    internal_format = gl.SRGB8,
+                    components = 3,
+                ) or_return
                 ALBEDO_TEXTURE_CACHE[tex] = m.albedo_texture
             }
         }
@@ -193,7 +206,11 @@ send_material_to_gpu :: proc(mat: ^Material_Data) -> (m: Material_Gpu, error: Ma
         if tex, present := mat.transparency_texture.?; present {
             m.transparency_texture = TRANSPARENCY_TEXTURE_CACHE[tex]
             if m.transparency_texture == 0 {
-                m.transparency_texture = load_texture(tex, components = 1) or_return
+                m.transparency_texture = load_texture(
+                    tex,
+                    mipmaps = .Linear,
+                    components = 1,
+                ) or_return
                 TRANSPARENCY_TEXTURE_CACHE[tex] = m.transparency_texture
             }
         }
@@ -608,6 +625,8 @@ run_blur_cube :: proc(program_2d, program_cube: u32, tex: u32, uniforms: ^Blur_P
 }
 
 application :: proc() -> Maybe(string) {
+    inspector_start()
+
     if (sdl.Init(sdl.INIT_VIDEO) != 0) do return common.sdl2_panic("sdl.Init")
     defer sdl.Quit()
 
@@ -640,7 +659,7 @@ application :: proc() -> Maybe(string) {
     sdl.GL_SetSwapInterval(1)
     gl.load_up_to(4, 6, sdl.gl_set_proc_address)
 
-    fmt.printfln("OpenGL initialized: %s", gl.GetString(gl.VERSION))
+    log("OpenGL initialized: %s", gl.GetString(gl.VERSION))
 
     /////////////////////////////////
 
@@ -649,7 +668,7 @@ application :: proc() -> Maybe(string) {
     }
 
     path_to_obj := os.args[1]
-    fmt.printfln("Loading scene from %s", path_to_obj)
+    log("Loading scene from %s", path_to_obj)
 
     obj_data, obj_reading_error := read_obj_file(path_to_obj)
     if obj_reading_error != nil {
@@ -673,15 +692,15 @@ application :: proc() -> Maybe(string) {
     destroy_objects(objects)
     destroy_materials(materials)
 
-    fmt.printfln("Scene loaded to VRAM")
+    log("Scene loaded to VRAM")
 
     /////////////////////////////////
 
-    fmt.printfln("Compiling shaders")
+    log("Compiling shaders")
 
     object_shaders := common.compile_shader_program({
-        vertex_path = "homework3/object.vert",
-        fragment_path = "homework3/object.frag",
+        vertex_path = "homework3/shaders/object.vert",
+        fragment_path = "homework3/shaders/object.frag",
     }) or_return
     defer common.destroy_shader_program(object_shaders)
     object_program := object_shaders.program
@@ -689,8 +708,8 @@ application :: proc() -> Maybe(string) {
     common.get_uniform_locations(object_program, &object_program_uniforms, ignore_missing = true)
 
     shadow_shaders := common.compile_shader_program({
-        vertex_path = "homework3/shadow.vert",
-        fragment_path = "homework3/shadow.frag",
+        vertex_path = "homework3/shaders/shadow.vert",
+        fragment_path = "homework3/shaders/shadow.frag",
     }) or_return
     defer common.destroy_shader_program(shadow_shaders)
     shadow_program := shadow_shaders.program
@@ -698,8 +717,8 @@ application :: proc() -> Maybe(string) {
     common.get_uniform_locations(shadow_program, &shadow_program_uniforms, ignore_missing = true)
 
     blur_pass_2d_shaders := common.compile_shader_program({
-        vertex_path = "homework3/rect.vert",
-        fragment_path = "homework3/blur_pass_2d.frag",
+        vertex_path = "homework3/shaders/rect.vert",
+        fragment_path = "homework3/shaders/blur_pass_2d.frag",
     }) or_return
     defer common.destroy_shader_program(blur_pass_2d_shaders)
     blur_pass_2d_program := blur_pass_2d_shaders.program
@@ -707,8 +726,8 @@ application :: proc() -> Maybe(string) {
     common.get_uniform_locations(blur_pass_2d_program, &blur_pass_2d_program_uniforms, ignore_missing = true)
 
     blur_pass_cube_shaders := common.compile_shader_program({
-        vertex_path = "homework3/rect.vert",
-        fragment_path = "homework3/blur_pass_cube.frag",
+        vertex_path = "homework3/shaders/rect.vert",
+        fragment_path = "homework3/shaders/blur_pass_cube.frag",
     }) or_return
     defer common.destroy_shader_program(blur_pass_cube_shaders)
     blur_pass_cube_program := blur_pass_cube_shaders.program
@@ -716,15 +735,15 @@ application :: proc() -> Maybe(string) {
     common.get_uniform_locations(blur_pass_cube_program, &blur_pass_cube_program_uniforms, ignore_missing = true)
 
     debug_shaders := common.compile_shader_program({
-        vertex_path = "homework3/rect.vert",
-        fragment_path = "homework3/debug.frag",
+        vertex_path = "homework3/shaders/rect.vert",
+        fragment_path = "homework3/shaders/debug.frag",
     }) or_return
     defer common.destroy_shader_program(debug_shaders)
     debug_program := debug_shaders.program
     debug_program_uniforms := Debug_Uniforms{}
     common.get_uniform_locations(debug_program, &debug_program_uniforms)
 
-    fmt.printfln("Finished compiling shaders")
+    log("Finished compiling shaders")
 
     /////////////////////////////////
 
@@ -779,11 +798,11 @@ application :: proc() -> Maybe(string) {
 
     mouse_down: bit_set[1..=2]
 
-    paused := false
     running := true
-    debug := true
     move_camera := true
     for running {
+        inspector_inc_frame()
+
         for event: sdl.Event; sdl.PollEvent(&event); {
             #partial switch event.type {
                 case .QUIT:
@@ -799,11 +818,20 @@ application :: proc() -> Maybe(string) {
                         case .ESCAPE:
                             running = false
                         case .P:
-                            paused = !paused
+                            config.paused = !config.paused
                         case .V:
-                            debug = !debug
+                            config.debug = !config.debug
                         case .M:
                             move_camera = !move_camera
+
+                        case .UP:
+                            inspector_selection_up()
+                        case .DOWN:
+                            inspector_selection_down()
+                        case .KP_ENTER:
+                            fallthrough
+                        case .RETURN:
+                            inspector_action(0)
                     }
                     button_down[event.key.keysym.sym] = true
                 case .KEYUP:
@@ -835,7 +863,7 @@ application :: proc() -> Maybe(string) {
         current_time := timelib.now()
         defer last_frame_start = current_time
         dt := cast(f32)timelib.duration_seconds(timelib.diff(last_frame_start, current_time))
-        if !paused do time += dt
+        if !config.paused do time += dt
 
         ///////////////////////////////////
 
@@ -861,7 +889,7 @@ application :: proc() -> Maybe(string) {
         )
 
         scene_size := aabb_diagonal(scene_aabb)
-        if move_camera && !paused {
+        if move_camera && !config.paused {
             lights.point_position = camera.position + 
                 [3]f32{math.sin(time * 0.5), math.sin(time * 0.4), math.sin(time * 0.3)} * scene_size * 0.03
         } else if button_down[.L] {
@@ -912,13 +940,14 @@ application :: proc() -> Maybe(string) {
 
         ///////////////////////////////////
 
-        if debug {
+        if config.debug {
             debug_draw({-0.8, -0.8}, {0.4, 0.4}, lights.sun_shadow_map, &debug_program_uniforms, debug_program)
             debug_draw({-0.4, -0.8}, {0.4, 0.4}, gpu_materials[1].albedo_texture, &debug_program_uniforms, debug_program)
             debug_draw({0.0, -0.8}, {0.4, 0.4}, blur.temp_texture_2d, &debug_program_uniforms, debug_program)
             debug_draw({0.4, -0.8}, {0.4, 0.4}, blur.temp_texture_cube, &debug_program_uniforms, debug_program)
         }
 
+        inspector_render()
         sdl.GL_SwapWindow(window)
     }
 
