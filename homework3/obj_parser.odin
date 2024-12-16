@@ -42,6 +42,8 @@ Material_Data :: struct {
     albedo_texture: Maybe(string),
     transparency: f32,
     transparency_texture: Maybe(string),
+    bump_map: Maybe(string),
+    gloss_map: Maybe(string),
     glossiness: [3]f32,
     power: f32,
 }
@@ -266,6 +268,16 @@ read_material_file :: proc(path: string, lib: ^map[string]int, materials: ^[dyna
                 return fmt.tprintf("Expected end of line after Ns command and 1 component")
             }
             current_material.power = ns
+        } else if command == "map_bump" || command == "bump" {
+            skip_whitespace(r)
+            rel_path, allocates := fix_slashes(read_line_temp(r))
+            current_material.bump_map = filepath.join({directory, rel_path})
+            if allocates do delete(rel_path)
+        } else if command == "map_Ks" {
+            skip_whitespace(r)
+            rel_path, allocates := fix_slashes(read_line_temp(r))
+            current_material.gloss_map = filepath.join({directory, rel_path})
+            if allocates do delete(rel_path)
         } else {
             read_line_temp(r)
         }
@@ -361,7 +373,11 @@ read_obj_file :: proc(path: string) -> (data: Wavefront_Obj_Data, error: Maybe(s
                 v_index = read_int(r) or_return
                 if v_index == 0 { return data, fmt.tprintf("Expected vertex index, found 0") }
                 expect_byte(r, '/') or_return
-                t_index = read_int(r) or_return
+                if peek_byte(r) == '/' {
+                    t_index = 0
+                } else {
+                    t_index = read_int(r) or_return
+                }
                 expect_byte(r, '/') or_return
                 n_index = read_int(r) or_return
 
@@ -476,7 +492,7 @@ obj_data_into_objects :: proc(data: Wavefront_Obj_Data) -> (objects: []Object, m
                     append(&vertices, Vertex{
                         position = data.vertices[key[0]],
                         normal = data.normals[key[2]],
-                        texcoord = data.texcoords[key[1]],
+                        texcoord = key[1] != -1 ? data.texcoords[key[1]] : [2]f32{0, 0},
                     })
                 }
                 indices[i * 3 + j] = index

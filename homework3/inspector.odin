@@ -10,19 +10,6 @@ import "core:time"
 import "core:slice"
 import "core:sys/linux"
 
-config: struct {
-    paused: bool "name=Paused,editable",
-    debug: bool "name=Show debug renderers,editable",
-    gamma_correction: bool "name=Apply gamma correction to SRGB textures,editable,default=true",
-    tone_mapping: Tone_Mapping "name=Tone mapping curve,editable",
-    srgb_framebuffer: bool "name=Use built-in SRGB framebuffer,editable,default=true",
-    point_light_zero_shadow: bool "name=Enable shadow for point light 0,editable",
-    regenerate_lights: bool "name=Resample Light Positions,button",
-    move_light_zero_around: bool "name=Move first light around the camera,editable,default=true",
-    teleport_light_zero_to_camera: bool "name=Teleport first light to camera,button",
-    teleport_light_one_to_camera: bool "name=Teleport second light to camera,button",
-
-}
 
 widget_ids: struct {
     root_list,

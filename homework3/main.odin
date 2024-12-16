@@ -20,10 +20,34 @@ import stb_img "vendor:stb/image"
 
 import common "../common"
 
+config: struct {
+    paused: bool "name=Paused,editable",
+    debug: bool "name=Show debug renderers,editable",
+    gamma_correction: bool "name=Apply gamma correction to SRGB textures,editable,default=true",
+    tone_mapping: Tone_Mapping "name=Tone mapping curve,editable",
+    srgb_framebuffer: bool "name=Use built-in SRGB framebuffer,editable,default=true",
+    point_light_zero_shadow: bool "name=Enable shadow for point light 0,editable",
+    regenerate_lights: bool "name=Resample Light Positions,button",
+    move_light_zero_around: bool "name=Move first light around the camera,editable,default=true",
+    teleport_light_zero_to_camera: bool "name=Teleport first light to camera,button",
+    teleport_light_one_to_camera: bool "name=Teleport second light to camera,button",
+    bump_mapping: bool "name=Enable bump mapping,editable,default=true",
+    gloss_mapping: bool "name=Enable gloss mapping,editable,default=true",
+    output_override: Output_Override "name=Output,editable",
+    fog: bool "name=Enable fog,editable,default=true",
+    volumetric_shadows: bool "name=Enable volumetric shadows,editable,default=true",
+    volumetric_shadows_iters: int "name=Volumetric shadows iterations,editable,default=32",
+}
+
 TEXTURE_UNIT_ALBEDO :: 0
 TRANSPARENCY_TEXTURE_UNIT :: 1
 SUN_SHADOW_TEXTURE_UNIT :: 2
 POINT_SHADOW_TEXTURE_UNIT :: 3
+BUMP_MAP_TEXTURE_UNIT :: 4
+GLOSS_MAP_TEXTURE_UNIT :: 5
+REFLECTION_CUBEMAP_TEXTURE_UNIT :: 6
+
+SKY_COLOR :: [3]f32{0.7, 0.7, 1.0}
 
 SHADOW_BIAS :: 1e-2
 
@@ -44,6 +68,9 @@ Material_Gpu :: struct {
     transparency_texture: u32,
     glossiness: [3]f32,
     power: f32,
+    use_bump_map: bool,
+    bump_map: u32,
+    gloss_map: u32,
 }
 
 Object :: struct {
@@ -60,10 +87,20 @@ Object_Gpu :: struct {
     ebo: u32,
     vertex_count: i32,
     material_id: int,
+    model: matrix[4, 4]f32,
 }
 
 Tone_Mapping :: enum {
     None, Reinhard, Arctan, Uncharted2, ACES
+}
+
+Output_Override :: enum {
+    None = 0,
+    Albedo = 1,
+    Normal = 2,
+    Bump = 3,
+    Gloss = 4,
+    SunShadow = 5,
 }
 
 Uniforms :: struct {
@@ -77,6 +114,8 @@ Uniforms :: struct {
 
     camera_position, view_direction,
 
+    fog_half_distance, fog_color,
+    volumetric_shadows, volumetric_shadows_iters, volumetric_shadows_weight,
     ambient,
     sun_direction, sun_color, sun_shadow_map, sun_transform,
     point_light_count,
@@ -84,6 +123,13 @@ Uniforms :: struct {
     point_zero_has_shadow, point_zero_shadow_map,
     shadow_bias, is_point,
     tone_mapping,
+
+    use_bump_map, bump_map,
+    use_gloss_map, gloss_map,
+
+    cubemap,
+
+    output_override,
 
     dummy: i32
 }
@@ -114,6 +160,7 @@ send_object_to_gpu :: proc(object: ^Object) -> (o: Object_Gpu) {
 
     o.vertex_count = cast(i32)len(object.indices)
     o.material_id = object.material_id
+    o.model = linalg.MATRIX4F32_IDENTITY
 
     return
 }
@@ -169,10 +216,10 @@ load_texture :: proc(
         external_formats[components], gl.UNSIGNED_BYTE, data,
     )
 
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap_s)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap_t)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, min_filter)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, mag_filter)
+    defer gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap_s)
+    defer gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap_t)
+    defer gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, min_filter)
+    defer gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, mag_filter)
 
     if mipmaps == .None do return
 
@@ -229,6 +276,8 @@ load_texture :: proc(
 }
 
 ALBEDO_TEXTURE_CACHE: map[string]u32
+BUMP_MAPS_TEXTURE_CACHE: map[string]u32
+GLOSS_MAPS_TEXTURE_CACHE: map[string]u32
 TRANSPARENCY_TEXTURE_CACHE: map[string]u32
 
 send_material_to_gpu :: proc(
@@ -274,6 +323,33 @@ send_material_to_gpu :: proc(
         }
     }
 
+    if tex, present := mat.bump_map.?; present {
+        m.use_bump_map = true
+        m.bump_map = BUMP_MAPS_TEXTURE_CACHE[tex]
+        if m.bump_map == 0 {
+            m.bump_map = load_texture(
+                tex,
+                mipmaps = .SRGB,
+                internal_format = gl.R8,
+                components = 1,
+            ) or_return
+            BUMP_MAPS_TEXTURE_CACHE[tex] = m.bump_map
+        }
+    }
+
+    if tex, present := mat.gloss_map.?; present {
+        m.gloss_map = GLOSS_MAPS_TEXTURE_CACHE[tex]
+        if m.gloss_map == 0 {
+            m.gloss_map = load_texture(
+                tex,
+                mipmaps = .SRGB,
+                internal_format = gl.RGB8,
+                components = 3,
+            ) or_return
+            GLOSS_MAPS_TEXTURE_CACHE[tex] = m.gloss_map
+        }
+    }
+
     m.id = mat.id
     m.albedo = mat.albedo
     m.transparency = mat.transparency
@@ -285,10 +361,14 @@ send_material_to_gpu :: proc(
 
 prepare_object_shader_program :: proc(program: u32, uniforms: ^Uniforms) {
     gl.UseProgram(program)
-    gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, 0)
     gl.Uniform1i(uniforms.albedo_tex, TEXTURE_UNIT_ALBEDO)
     gl.Uniform1f(uniforms.shadow_bias, SHADOW_BIAS)
     gl.Uniform1i(uniforms.transparency_tex, TRANSPARENCY_TEXTURE_UNIT)
+    gl.Uniform1i(uniforms.sun_shadow_map, SUN_SHADOW_TEXTURE_UNIT)
+    gl.Uniform1i(uniforms.point_zero_shadow_map, POINT_SHADOW_TEXTURE_UNIT)
+    gl.Uniform1i(uniforms.bump_map, BUMP_MAP_TEXTURE_UNIT)
+    gl.Uniform1i(uniforms.gloss_map, GLOSS_MAP_TEXTURE_UNIT)
+    gl.Uniform1i(uniforms.cubemap, REFLECTION_CUBEMAP_TEXTURE_UNIT)
     tone_mapping: i32 = 0
     switch config.tone_mapping {
         case .None:
@@ -303,6 +383,10 @@ prepare_object_shader_program :: proc(program: u32, uniforms: ^Uniforms) {
             tone_mapping = 4
     }
     gl.Uniform1i(uniforms.tone_mapping, tone_mapping)
+    gl.Uniform1i(uniforms.output_override, i32(config.output_override))
+    gl.Uniform1i(uniforms.volumetric_shadows, config.volumetric_shadows ? 1 : 0)
+    gl.Uniform1i(uniforms.volumetric_shadows_iters, cast(i32)config.volumetric_shadows_iters)
+    gl.Uniform1f(uniforms.volumetric_shadows_weight, 3e-3)
 }
 
 bind_material :: proc(mat: Material_Gpu, uniforms: ^Uniforms) {
@@ -327,6 +411,22 @@ bind_material :: proc(mat: Material_Gpu, uniforms: ^Uniforms) {
 
     gl.Uniform3fv(uniforms.glossiness, 1, raw_data(mat.glossiness[:]))
     gl.Uniform1f(uniforms.power, mat.power)
+
+    if mat.use_bump_map && config.bump_mapping {
+        gl.Uniform1i(uniforms.use_bump_map, 1)
+        gl.ActiveTexture(gl.TEXTURE0 + BUMP_MAP_TEXTURE_UNIT)
+        gl.BindTexture(gl.TEXTURE_2D, mat.bump_map)
+    } else {
+        gl.Uniform1i(uniforms.use_bump_map, 0)
+    }
+
+    if mat.gloss_map != 0 && config.gloss_mapping {
+        gl.Uniform1i(uniforms.use_gloss_map, 1)
+        gl.ActiveTexture(gl.TEXTURE0 + GLOSS_MAP_TEXTURE_UNIT)
+        gl.BindTexture(gl.TEXTURE_2D, mat.gloss_map)
+    } else {
+        gl.Uniform1i(uniforms.use_gloss_map, 0)
+    }
 }
 
 CUBEMAP_SIDES := [?]u32{
@@ -346,6 +446,7 @@ CUBEMAP_FACE_ORIENTATIONS := [6][2][3]f32{
 
 SUN_SHADOW_MAP_SIZE :: 1024
 POINT_SHADOW_MAP_SIZE :: 512
+REFLECTION_MAP_SIZE :: 256
 
 MAX_POINT_LIGHTS :: 8
 
@@ -475,6 +576,7 @@ bind_lights :: proc(lights: Lights, uniforms: ^Uniforms) {
     lights := lights
 
     gl.Uniform3fv(uniforms.ambient, 1, raw_data(lights.ambient[:]))
+    gl.Uniform3fv(uniforms.fog_color, 1, raw_data(lights.ambient[:]))
     gl.Uniform3fv(uniforms.sun_direction, 1, raw_data(lights.sun_direction[:]))
     gl.Uniform3fv(uniforms.sun_color, 1, raw_data(lights.sun_color[:]))
     gl.UniformMatrix4fv(uniforms.sun_transform, 1, false, &lights.cached_sun_transform[0, 0])
@@ -502,8 +604,7 @@ bind_lights :: proc(lights: Lights, uniforms: ^Uniforms) {
 bind_object :: proc(obj: Object_Gpu, uniforms: ^Uniforms) {
     gl.BindVertexArray(obj.vao)
 
-    model := linalg.MATRIX4F32_IDENTITY
-    flat_model := linalg.matrix_flatten(model)
+    flat_model := linalg.matrix_flatten(obj.model)
     gl.UniformMatrix4fv(uniforms.model, 1, false, raw_data(flat_model[:]))
 }
 
@@ -709,6 +810,62 @@ run_blur_cube :: proc(program_2d, program_cube: u32, tex: u32, uniforms: ^Blur_P
     gl.DrawArrays(gl.TRIANGLES, 0, 6)
 }
 
+Reflection_Map :: struct {
+    near: f32,
+    far: f32,
+    position: [3]f32,
+    fbos: [6]u32,
+    cubemap: u32,
+    depth_rbo: u32,
+}
+
+init_reflection_map :: proc(scene_size: f32) -> (r: Reflection_Map) {
+    r.near = 0.1
+    r.far = scene_size * 1.5
+
+    gl.GenTextures(1, &r.cubemap)
+    gl.BindTexture(gl.TEXTURE_CUBE_MAP, r.cubemap)
+    gl.TexParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.TexParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    for side in CUBEMAP_SIDES {
+        gl.TexImage2D(side, 0, gl.RGBA, REFLECTION_MAP_SIZE, REFLECTION_MAP_SIZE, 0, gl.RGBA, gl.FLOAT, nil)
+    }
+
+    gl.GenRenderbuffers(1, &r.depth_rbo)
+    gl.BindRenderbuffer(gl.RENDERBUFFER, r.depth_rbo)
+    gl.RenderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, REFLECTION_MAP_SIZE, REFLECTION_MAP_SIZE)
+
+    gl.GenFramebuffers(6, raw_data(r.fbos[:]))
+    for i in 0..<6 {
+        gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, r.fbos[i])
+        gl.FramebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, CUBEMAP_SIDES[i], r.cubemap, 0)
+        gl.FramebufferRenderbuffer(gl.DRAW_FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, r.depth_rbo)
+    }
+
+    return
+}
+
+bind_reflection_map :: proc(r: Reflection_Map, uniforms: ^Uniforms, side: int) {
+    transform := linalg.matrix4_perspective_f32(
+        math.PI / 2, 1, r.near, r.far,
+    ) * linalg.matrix4_look_at_f32(
+        r.position,
+        r.position + CUBEMAP_FACE_ORIENTATIONS[side][0],
+        CUBEMAP_FACE_ORIENTATIONS[side][1],
+    )
+
+    id := linalg.MATRIX4F32_IDENTITY
+    position := r.position
+    flat_transform := linalg.matrix_flatten(transform)
+    gl.UniformMatrix4fv(uniforms.transform, 1, false, raw_data(flat_transform[:]))
+    gl.UniformMatrix4fv(uniforms.projection, 1, false, raw_data(flat_transform[:]))
+    gl.UniformMatrix4fv(uniforms.view, 1, false, &id[0, 0])
+    gl.Uniform3fv(uniforms.camera_position, 1, raw_data(position[:]))
+
+    gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, r.fbos[side])
+    gl.Viewport(0, 0, REFLECTION_MAP_SIZE, REFLECTION_MAP_SIZE)
+}
+
 application :: proc() -> Maybe(string) {
     inspector_start()
 
@@ -769,6 +926,7 @@ application :: proc() -> Maybe(string) {
             aabb_update(&scene_aabb, vertex.position)
         }
     }
+    scene_size := aabb_diagonal(scene_aabb)
 
     gpu_objects := make([]Object_Gpu, len(objects))
     for &object, i in objects do gpu_objects[i] = send_object_to_gpu(&object)
@@ -785,6 +943,15 @@ application :: proc() -> Maybe(string) {
 
     destroy_objects(objects)
     destroy_materials(materials)
+
+    reflective_obj_data := read_obj_file("homework3/models/bunny.obj") or_return
+    // reflective_obj_data := read_obj_file("homework3/models/cube.obj") or_return
+    reflective_obj, reflective_obj_materials := obj_data_into_objects(reflective_obj_data)
+
+    gpu_reflective_obj := send_object_to_gpu(&reflective_obj[0])
+
+    destroy_objects(reflective_obj)
+    destroy_materials(reflective_obj_materials)
 
     log("Scene loaded to VRAM")
 
@@ -837,6 +1004,15 @@ application :: proc() -> Maybe(string) {
     debug_program_uniforms := Debug_Uniforms{}
     common.get_uniform_locations(debug_program, &debug_program_uniforms)
 
+    reflective_shaders := common.compile_shader_program({
+        vertex_path = "homework3/shaders/object.vert",
+        fragment_path = "homework3/shaders/reflect.frag",
+    }) or_return
+    defer common.destroy_shader_program(reflective_shaders)
+    reflective_program := reflective_shaders.program
+    reflective_program_uniforms := Uniforms{}
+    common.get_uniform_locations(reflective_program, &reflective_program_uniforms, ignore_missing = true)
+
     log("Finished compiling shaders")
 
     /////////////////////////////////
@@ -858,7 +1034,7 @@ application :: proc() -> Maybe(string) {
         position = [3]f32{0, 0, -5},
         fov = math.to_radians_f32(60),
         near = 0.1,
-        far = aabb_diagonal(scene_aabb) * 2.0,
+        far = scene_size * 2.0,
         yaw = 0,
         pitch = 0,
         roll = 0,
@@ -872,14 +1048,18 @@ application :: proc() -> Maybe(string) {
         sun_color = {1, 1, 0.8},
         point_light_number = 0,
         near = 0.1,
-        far = aabb_diagonal(scene_aabb) * 1.5,
+        far = scene_size * 1.5,
     }
     init_lights(&lights)
 
-    point_light_attenuation := [3]f32{1, 0, 1000.0 / sqr(aabb_diagonal(scene_aabb))}
+    point_light_attenuation := [3]f32{1, 0, 1000.0 / sqr(scene_size)}
 
     speed: f32 = linalg.length(scene_aabb.max - scene_aabb.min) * 0.1
     SENSITIVITY :: 0.01
+
+    /////////////////////////////////
+
+    reflection_map := init_reflection_map(aabb_diagonal(scene_aabb))
 
     /////////////////////////////////
 
@@ -913,11 +1093,6 @@ application :: proc() -> Maybe(string) {
                             running = false
                         case .P:
                             config.paused = !config.paused
-                        case .V:
-                            config.debug = !config.debug
-                        case .M:
-                            move_camera = !move_camera
-
                         case .UP:
                             inspector_selection_up()
                         case .DOWN:
@@ -1043,16 +1218,58 @@ application :: proc() -> Maybe(string) {
 
         ///////////////////////////////////
 
-        prepare_object_shader_program(object_program, &object_program_uniforms)
-        gl.Viewport(0, 0, dimensions.x, dimensions.y)
+        model :=
+            linalg.matrix4_translate_f32({
+                math.sin(time * 0.3) * scene_size * 0.1,
+                (scene_aabb.max.y + scene_aabb.min.y) * 0.5,
+                math.sin(time * 0.2) * scene_size * 0.1,
+            }) *
+            linalg.matrix4_rotate_f32(time, {0, 1, 0}) *
+            linalg.matrix4_scale_f32({
+                scene_size * 0.01,
+                scene_size * 0.01,
+                scene_size * 0.01,
+            })
+        gpu_reflective_obj.model = model
 
-        gl.ClearColor(0.7, 0.8, 1.0, 0.0)
+        reflection_map.position = (model * [4]f32{0, 0, 0, 1}).xyz
+
+        for reflection_side in 0..<6 {
+            prepare_object_shader_program(object_program, &object_program_uniforms)
+            bind_reflection_map(reflection_map, &object_program_uniforms, reflection_side)
+            gl.ClearColor(SKY_COLOR[0], SKY_COLOR[1], SKY_COLOR[2], 0.0)
+            gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+
+            bind_lights(lights, &object_program_uniforms)
+
+            for object in gpu_objects {
+                material := gpu_materials[object.material_id]
+                bind_material(material, &object_program_uniforms)
+                bind_object(object, &object_program_uniforms)
+
+                gl.DrawElements(gl.TRIANGLES, object.vertex_count, gl.UNSIGNED_INT, nil)
+            }
+        }
+
+        ///////////////////////////////////
+
+        prepare_object_shader_program(object_program, &object_program_uniforms)
+
+        gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, 0)
+        gl.Viewport(0, 0, dimensions.x, dimensions.y)
+        gl.ClearColor(SKY_COLOR[0], SKY_COLOR[1], SKY_COLOR[1], 0.0)
         gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
         if config.srgb_framebuffer {
             gl.Enable(gl.FRAMEBUFFER_SRGB)
         } else {
             gl.Disable(gl.FRAMEBUFFER_SRGB)
+        }
+
+        if config.fog {
+            gl.Uniform1f(object_program_uniforms.fog_half_distance, scene_size * 0.7)
+        } else {
+            gl.Uniform1f(object_program_uniforms.fog_half_distance, math.INF_F32)
         }
 
         bind_lights(lights, &object_program_uniforms)
@@ -1068,6 +1285,23 @@ application :: proc() -> Maybe(string) {
 
             gl.DrawElements(gl.TRIANGLES, object.vertex_count, gl.UNSIGNED_INT, nil)
         }
+
+        prepare_object_shader_program(reflective_program, &reflective_program_uniforms)
+        bind_lights(lights, &reflective_program_uniforms)
+        bind_camera(camera, &reflective_program_uniforms)
+        bind_object(gpu_reflective_obj, &reflective_program_uniforms)
+
+        if config.fog {
+            gl.Uniform1f(reflective_program_uniforms.fog_half_distance, scene_size * 0.7)
+        } else {
+            gl.Uniform1f(reflective_program_uniforms.fog_half_distance, math.INF_F32)
+        }
+
+        gl.ActiveTexture(gl.TEXTURE0 + REFLECTION_CUBEMAP_TEXTURE_UNIT)
+        gl.BindTexture(gl.TEXTURE_CUBE_MAP, reflection_map.cubemap)
+        gl.DrawElements(gl.TRIANGLES, gpu_reflective_obj.vertex_count, gl.UNSIGNED_INT, nil)
+
+        gl.Disable(gl.FRAMEBUFFER_SRGB)
 
         ///////////////////////////////////
 

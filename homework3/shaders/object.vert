@@ -15,6 +15,6 @@ out vec2 texcoord;
 void main() {
     gl_Position = projection * view * model * vec4(in_position, 1.0);
     position = (model * vec4(in_position, 1.0)).xyz;
-    normal = normalize((model * vec4(in_normal, 0.0)).xyz);
+    normal = normalize(mat3(model) * in_normal);
     texcoord = in_texcoord;
 }
