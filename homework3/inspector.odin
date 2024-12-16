@@ -3,13 +3,25 @@ package main
 import "core:encoding/ansi"
 import "core:fmt"
 import "core:strings"
+import "core:strconv"
 import "core:reflect"
 import "core:mem"
+import "core:time"
+import "core:slice"
 import "core:sys/linux"
 
 config: struct {
     paused: bool "name=Paused,editable",
     debug: bool "name=Show debug renderers,editable",
+    gamma_correction: bool "name=Apply gamma correction to SRGB textures,editable,default=true",
+    tone_mapping: Tone_Mapping "name=Tone mapping curve,editable",
+    srgb_framebuffer: bool "name=Use built-in SRGB framebuffer,editable,default=true",
+    point_light_zero_shadow: bool "name=Enable shadow for point light 0,editable",
+    regenerate_lights: bool "name=Resample Light Positions,button",
+    move_light_zero_around: bool "name=Move first light around the camera,editable,default=true",
+    teleport_light_zero_to_camera: bool "name=Teleport first light to camera,button",
+    teleport_light_one_to_camera: bool "name=Teleport second light to camera,button",
+
 }
 
 widget_ids: struct {
@@ -39,7 +51,11 @@ printfln :: proc(format: string, args: ..any) {
     buffer_ptr += len(fmt.bprintfln(buffer[buffer_ptr:], format, ..args))
 }
 
+@(private="file") start_time: time.Time
+
 inspector_start :: proc() {
+    start_time = time.now()
+
     widget_tree = make([dynamic]Widget, 1, 100)
 
     widget_ids.root_list = inspector_add_widget(Widget{
@@ -83,6 +99,8 @@ inspector_add_widget :: proc(widget: Widget, parent: int) -> int {
 Struct_Tag_Info :: struct {
     name: Maybe(string),
     editable: bool,
+    button: bool,
+    default: Maybe(string),
 }
 
 parse_struct_field :: proc(tag: reflect.Struct_Tag) -> (info: Struct_Tag_Info) {
@@ -91,6 +109,10 @@ parse_struct_field :: proc(tag: reflect.Struct_Tag) -> (info: Struct_Tag_Info) {
             info.name = strings.trim_prefix(part, "name=")
         } else if strings.has_prefix(part, "editable") {
             info.editable = true
+        } else if strings.has_prefix(part, "default=") {
+            info.default = strings.trim_prefix(part, "default=")
+        } else if strings.has_prefix(part, "button") {
+            info.button = true
         }
     }
 
@@ -99,6 +121,20 @@ parse_struct_field :: proc(tag: reflect.Struct_Tag) -> (info: Struct_Tag_Info) {
 
 inspector_create_tree :: proc(tag: Struct_Tag_Info, ptr: rawptr, T: typeid, parent: int) -> int {
     info := type_info_of(T)
+
+    if default, present := tag.default.?; present {
+        if reflect.is_boolean(info) {
+            (cast(^bool)ptr)^ = strconv.parse_bool(default) or_else panic("Invalid boolean value")
+        } else if reflect.are_types_identical(info, type_info_of(int)) {
+            (cast(^int)ptr)^ = strconv.parse_int(default) or_else panic("Invalid integer value")
+        } else if reflect.are_types_identical(info, type_info_of(f32)) {
+            (cast(^f32)ptr)^ = strconv.parse_f32(default) or_else panic("Invalid float value")
+        } else if reflect.is_string(info) {
+            (cast(^string)ptr)^ = strings.clone(default)
+        } else {
+            fmt.panicf("Unsupported default value for type %v", info)
+        }
+    }
 
     if reflect.is_struct(info) {
         id := inspector_add_widget(Widget{
@@ -118,6 +154,24 @@ inspector_create_tree :: proc(tag: Struct_Tag_Info, ptr: rawptr, T: typeid, pare
                 id,
             )
         }
+
+        return id
+    } else if reflect.is_enum(info) && tag.editable {
+        id := inspector_add_widget(Widget{
+            data = Widget_Select{
+                name = tag.name.? or_else "enum",
+                value = any{data = ptr, id = T},
+            }
+        }, parent)
+
+        return id
+    } else if reflect.is_boolean(info) && tag.button {
+        id := inspector_add_widget(Widget{
+            data = Widget_Button{
+                name = tag.name.? or_else "button",
+                value = cast(^bool)ptr,
+            }
+        }, parent)
 
         return id
     } else if reflect.is_boolean(info) && tag.editable {
@@ -141,7 +195,7 @@ inspector_create_tree :: proc(tag: Struct_Tag_Info, ptr: rawptr, T: typeid, pare
     }
 }
 
-terminal_width: int = 60
+terminal_width: int = 45
 frame: u64 = 0
 
 log :: proc(format: string, args: ..any) {
@@ -190,6 +244,7 @@ Widget_Base :: struct {
     id: int,
     children: [dynamic]int,
     tag: bool,
+    deleted: bool,
 }
 
 Widget_Text :: struct {
@@ -217,6 +272,16 @@ Widget_Toggle :: struct {
     value: ^bool,
 }
 
+Widget_Button :: struct {
+    name: string,
+    value: ^bool,
+}
+
+Widget_Select :: struct {
+    name: string,
+    value: any,
+}
+
 Widget_View :: struct {
     name: string,
     value: any,
@@ -227,8 +292,10 @@ Widget_Data :: union {
     Widget_Tagged_Text,
     Widget_List,
     Widget_Toggle,
+    Widget_Button,
     Widget_Raw_List,
     Widget_View,
+    Widget_Select,
 }
 
 Widget :: struct {
@@ -236,10 +303,11 @@ Widget :: struct {
     data: Widget_Data,
 }
 
-selection: int = 1
-widget_tree: [dynamic]Widget
-garbage_ids: [dynamic]int
-selection_order: [dynamic]int
+@(private="file") selection: int = 1
+@(private="file") widget_tree: [dynamic]Widget
+@(private="file") garbage_ids: [dynamic]int
+@(private="file") selection_order: [dynamic]int
+@(private="file") align_buffer: [1024]byte
 
 inspector_render_widget :: proc(id: int, level: int) {
     width := terminal_width - level * 2
@@ -262,22 +330,46 @@ inspector_render_widget :: proc(id: int, level: int) {
         return ansi.CSI + ansi.RESET + ansi.SGR + ansi.CSI + "60" + ansi.CHA + "\n" 
     }
 
+    str :: proc(text: string, width: int, padding: int = 0) -> string {
+        for i in 0..<width do align_buffer[i] = ' '
+        width := width - padding
+        if len(text) <= width {
+            mem.copy(&align_buffer, raw_data(text), len(text))
+        } else {
+            now := time.now()
+            diff := time.diff(start_time, now)
+            diff_ms := cast(u64)time.duration_milliseconds(diff) / 50
+            tick := int(diff_ms % u64(len(text) - width + 60))
+            start := tick - 30
+            end := start + width
+            if start <= 0 {
+                mem.copy(&align_buffer, raw_data(text[:width]), width)
+            } else if end >= len(text) {
+                mem.copy(&align_buffer, raw_data(text[len(text) - width:]), width)
+            } else {
+                mem.copy(&align_buffer, raw_data(text[start:end]), width)
+            }
+        }
+        return transmute(string)align_buffer[:width + padding]
+    }
+
     print(base_deco(id))
 
     widget := &widget_tree[id]
+    if widget.deleted do return
+
     switch &w in widget.data {
         case Widget_Text:
-            // TODO: fancy animation
-            printf("%s%s%s", w.ansi_deco, w.text[:min(width, len(w.text))], end_line(id))
+            printf("%s%s%s", w.ansi_deco, str(w.text, width), end_line(id))
             assert(len(widget.children) == 0)
         case Widget_List:
             if w.max_items != 0 && len(widget.children) > w.max_items {
                 remove_range(&widget.children, 0, len(widget.children) - w.max_items)
             }
             if w.collapsed {
-                printf("> %s%s", w.header[:min(width - 2, len(w.header))], end_line(id))
+                printf("> %s%s", str(w.header, width - 2), end_line(id))
             } else {
-                printf("- %s%s", w.header[:min(width - 2, len(w.header))], end_line(id))
+                printf("- %s%s", str(w.header, width - 2), end_line(id))
                 for i in widget.children {
                     inspector_render_widget(i, level + 1)
                 }
@@ -293,7 +385,7 @@ inspector_render_widget :: proc(id: int, level: int) {
                 w.tag,
                 base_deco(id),
                 w.ansi_text_deco,
-                w.text[:min(width - 3 - len(w.tag), len(w.text))],
+                str(w.text, width - 3 - len(w.tag), 2),
                 end_line(id),
             )
             assert(len(widget.children) == 0)
@@ -301,22 +393,37 @@ inspector_render_widget :: proc(id: int, level: int) {
             value_str := w.value^ ? "ON" : "OFF"
 
             printf(
-                "%s%s%s%s%s%s",
+                "%s%s%s%s%s",
                 base_deco(id),
-                w.name,
-                strings.repeat(" ", width - len(w.name) - len(value_str)),
+                str(w.name, width - len(value_str), 2),
                 w.value^ ? ansi.CSI + ansi.FG_GREEN + ansi.SGR : ansi.CSI + ansi.FG_RED + ansi.SGR,
                 value_str,
+                end_line(id),
+            )
+        case Widget_Button:
+            printf(
+                "%s[PRESS] %s%s",
+                base_deco(id),
+                str(w.name, width - 8),
                 end_line(id),
             )
         case Widget_View:
             value_repr := fmt.tprint(w.value)
 
             printf(
-                "%s%s%s%s%s",
+                "%s%s%s%s",
                 base_deco(id),
-                w.name,
-                strings.repeat(" ", width - len(w.name) - len(value_repr)),
+                str(w.name, width - len(value_repr), 2),
+                value_repr,
+                end_line(id),
+            )
+        case Widget_Select:
+            value_repr := fmt.tprint(w.value)
+
+            printf(
+                "%s%s%s%s",
+                base_deco(id),
+                str(w.name, width - len(value_repr), 2),
                 value_repr,
                 end_line(id),
             )
@@ -325,6 +432,7 @@ inspector_render_widget :: proc(id: int, level: int) {
 
 inspector_recompute_selection_order :: proc(id: int, result: ^[dynamic]int) {
     widget := widget_tree[id]
+    if widget.deleted do return
 
     switch w in widget.data {
         case Widget_Text:
@@ -343,6 +451,10 @@ inspector_recompute_selection_order :: proc(id: int, result: ^[dynamic]int) {
         case Widget_Toggle:
             append(result, id)
         case Widget_View:
+            append(result, id)
+        case Widget_Select:
+            append(result, id)
+        case Widget_Button:
             append(result, id)
     }
 }
@@ -397,6 +509,22 @@ inspector_action :: proc(value: int) {
             w.collapsed = !w.collapsed
         case Widget_Toggle:
             w.value^ = !w.value^
+        case Widget_Button:
+            w.value^ = true
+        case Widget_Select:
+            fields := reflect.enum_fields_zipped(w.value.id)
+            current := (cast(^int)w.value.data)^
+            current_index := -1
+            for field, i in fields {
+                if int(field.value) == current {
+                    current_index = i
+                    break
+                }
+            }
+            if current_index == -1 do return
+            value := value == 0 ? 1 : value
+            current_index = (current_index + value) %% len(fields)
+            (cast(^int)w.value.data)^ = int(fields[current_index].value)
     }
 }
 
@@ -423,6 +551,7 @@ inspector_render :: proc() {
     for i in 1..<len(widget_tree) {
         if !widget_tree[i].tag {
             append(&garbage_ids, i)
+            widget_tree[i].deleted = true
         }
     }
 

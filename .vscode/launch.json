@@ -9,8 +9,8 @@
             "request": "launch",
             "name": "Launch homework 3",
             "program": "${workspaceFolder}/homework3.bin",
-            // "args": ["homework3/models/sponza/sponza.obj"],
-            "args": ["homework3/models/cube/cube.obj"],
+            "args": ["homework3/models/sponza/sponza.obj"],
+            // "args": ["homework3/models/cube/cube.obj"],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "odin: Build Homework3"
         },

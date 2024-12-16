@@ -1,5 +1,7 @@
 #version 330 core
 
+#define MAX_LIGHTS 8
+
 uniform bool use_albedo_tex;
 uniform vec3 albedo;
 uniform sampler2D albedo_tex;
@@ -18,12 +20,14 @@ uniform vec3 sun_color;
 uniform mat4 sun_transform;
 uniform sampler2D sun_shadow_map;
 
-uniform vec3 point_position;
-uniform vec3 point_color;
-uniform vec3 point_attenuation;
-uniform float point_near;
-uniform float point_far;
-uniform samplerCube point_shadow_map;
+uniform int tone_mapping;
+uniform int point_light_count;
+uniform vec3 point_position[MAX_LIGHTS];
+uniform vec3 point_color[MAX_LIGHTS];
+uniform vec3 point_attenuation[MAX_LIGHTS];
+
+uniform bool point_zero_has_shadow;
+uniform samplerCube point_zero_shadow_map;
 
 uniform float shadow_bias;
 
@@ -35,6 +39,8 @@ in vec3 normal;
 in vec2 texcoord;
 
 layout (location = 0) out vec4 out_color;
+
+const float PI = 3.14159265358979323846;
 
 float diffuse_fac(vec3 direction) {
     return max(0.0, dot(normal, direction));
@@ -147,26 +153,75 @@ void main() {
 
     float sun_shadow_factor = in_sun_shadow_texture ? shadow_fac(sun_shadow_map, sun_shadow_pos) : 1.0;
 
-    vec3 point_light_vec = point_position - position;
-    float point_light_dist2 = dot(point_light_vec, point_light_vec);
-    float point_light_dist = sqrt(point_light_dist2);
-    vec3 point_light_direction = point_light_vec / point_light_dist;
-    vec3 point_attenuation = point_attenuation * vec3(1, point_light_dist, point_light_dist2);
-    float point_fraction = 1.0 / (point_attenuation.x + point_attenuation.y + point_attenuation.z);
-    float point_shadow_factor = cubemap_shadow_fac(point_shadow_map, point_light_vec);
+    vec3 total_light = ambient;
 
-    vec3 color = l_albedo * (
-        ambient +
-        sun_color * (
-            diffuse_fac(sun_direction) +
-            specular_fac(sun_direction)
-        ) * sun_shadow_factor +
-        point_color * (
+    total_light += sun_color * (
+        diffuse_fac(sun_direction) +
+        specular_fac(sun_direction)
+    ) * sun_shadow_factor;
+
+    int i = 0;
+    if (point_zero_has_shadow) {
+        i++;
+
+        vec3 point_light_vec = point_position[0] - position;
+        float point_light_dist2 = dot(point_light_vec, point_light_vec);
+        float point_light_dist = sqrt(point_light_dist2);
+        vec3 point_light_direction = point_light_vec / point_light_dist;
+        vec3 attenuation = point_attenuation[0] * vec3(1, point_light_dist, point_light_dist2);
+        float point_fraction = 1.0 / (attenuation.x + attenuation.y + attenuation.z);
+        float point_shadow_factor = cubemap_shadow_fac(point_zero_shadow_map, point_light_vec);
+
+        total_light += point_color[0] * (
             diffuse_fac(point_light_direction) +
             specular_fac(point_light_direction)
-        ) * point_fraction * point_shadow_factor
-    );
+        ) * point_fraction * point_shadow_factor;
+    }
+
+    for (; i < point_light_count; ++i) {
+        vec3 point_light_vec = point_position[i] - position;
+        float point_light_dist2 = dot(point_light_vec, point_light_vec);
+        float point_light_dist = sqrt(point_light_dist2);
+        vec3 point_light_direction = point_light_vec / point_light_dist;
+        vec3 attenuation = point_attenuation[i] * vec3(1, point_light_dist, point_light_dist2);
+        float point_fraction = 1.0 / (attenuation.x + attenuation.y + attenuation.z);
+
+        total_light += point_color[i] * (
+            diffuse_fac(point_light_direction) +
+            specular_fac(point_light_direction)
+        ) * point_fraction;
+    }
+
+    vec3 hdr = l_albedo * total_light;
+    vec3 color;
+
+    if (tone_mapping == 0) { // none
+        color = hdr;
+    } else if (tone_mapping == 1) { // reinhard
+        color = hdr / (hdr + vec3(1.0));
+    } else if (tone_mapping == 2) { // arctan
+        color = atan(hdr) * (2.0 / PI);
+    } else if (tone_mapping == 3) { // ACES
+        const float a = 2.51;
+        const float b = 0.03;
+        const float c = 2.43;
+        const float d = 0.59;
+        const float e = 0.14;
+        color = clamp((hdr * (a * hdr + b)) / (hdr * (c * hdr + d) + e), 0.0, 1.0);
+    } else if (tone_mapping == 4) { // Uncharted 2
+        const float A = 0.15;
+        const float B = 0.50;
+        const float C = 0.10;
+        const float D = 0.20;
+        const float E = 0.02;
+        const float F = 0.30;
+        const float W = 11.2;
+        const float exposureBias = 2.0;
+        hdr *= exposureBias;
+        vec3 cur = ((hdr * (A * hdr + C * B) + D * E) / (hdr * (A * hdr + B) + D * F)) - E / F;
+        const float whiteScale = ((W * (A * W + C * B) + D * E) / (W * (A * W + B) + D * F)) - E / F;
+        color = cur / whiteScale;
+    }
 
     out_color = vec4(color, 1.0);
-    // out_color = vec4(texture(point_shadow_map, position - camera_position).rgb * 0.001, 1.0);
 }

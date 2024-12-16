@@ -7,6 +7,7 @@ import "core:os"
 import "core:mem"
 import "core:slice"
 import "core:math"
+import "core:math/rand"
 import "core:math/linalg"
 import "core:reflect"
 import "core:testing"
@@ -61,6 +62,10 @@ Object_Gpu :: struct {
     material_id: int,
 }
 
+Tone_Mapping :: enum {
+    None, Reinhard, Arctan, Uncharted2, ACES
+}
+
 Uniforms :: struct {
     model, view, projection,
     transform,
@@ -74,8 +79,11 @@ Uniforms :: struct {
 
     ambient,
     sun_direction, sun_color, sun_shadow_map, sun_transform,
-    point_position, point_color, point_attenuation, point_far, point_near, point_shadow_map,
+    point_light_count,
+    point_position, point_color, point_attenuation,
+    point_zero_has_shadow, point_zero_shadow_map,
     shadow_bias, is_point,
+    tone_mapping,
 
     dummy: i32
 }
@@ -112,7 +120,7 @@ send_object_to_gpu :: proc(object: ^Object) -> (o: Object_Gpu) {
 
 load_texture :: proc(
     path: string,
-    components: int = 3,
+    components: i32 = 3,
     mipmaps: enum {
         None, SRGB, Linear,
     } = .None,
@@ -166,9 +174,56 @@ load_texture :: proc(
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, min_filter)
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, mag_filter)
 
-    if mipmaps != .None {
-        gl.GenerateMipmap(gl.TEXTURE_2D)
+    if mipmaps == .None do return
+
+    w1, h1 := width, height
+    w2, h2 := w1 / 2, h1 / 2
+    pixels1 := make([]byte, w1 * h1 * components)
+    pixels2 := make([]byte, w2 * h2 * components)
+
+    mem.copy(raw_data(pixels1), data, len(pixels1))
+    level: i32 = 1
+
+    for ; w2 > 0 && h2 > 0; level += 1 {
+        for y in 0..<h2 {
+            for x in 0..<w2 {
+                for c in 0..<components {
+                    p00 := cast(f32)pixels1[((y * 2) * w1 + x * 2) * components + c]
+                    p01 := cast(f32)pixels1[((y * 2) * w1 + x * 2 + 1) * components + c]
+                    p10 := cast(f32)pixels1[((y * 2 + 1) * w1 + x * 2) * components + c]
+                    p11 := cast(f32)pixels1[((y * 2 + 1) * w1 + x * 2 + 1) * components + c]
+
+                    if mipmaps == .Linear && c != 3 {
+                        p00 = math.pow(p00 / 255, 2.2) * 255
+                        p01 = math.pow(p01 / 255, 2.2) * 255
+                        p10 = math.pow(p10 / 255, 2.2) * 255
+                        p11 = math.pow(p11 / 255, 2.2) * 255
+                    }
+
+                    p := (p00 + p01 + p10 + p11) / 4
+
+                    if mipmaps == .Linear && c != 3 {
+                        p = math.pow(p / 255, 1 / 2.2) * 255
+                    }
+
+                    pixels2[(y * w2 + x) * components + c] = cast(u8)math.round(p)
+                }
+            }
+        }
+
+        gl.TexImage2D(
+            gl.TEXTURE_2D, level, internal_format, w2, h2, 0,
+            external_formats[components], gl.UNSIGNED_BYTE, raw_data(pixels2),
+        )
+
+        mem.copy(raw_data(pixels1), raw_data(pixels2), len(pixels2))
+
+        w1, h1 = w2, h2
+        w2, h2 = w1 / 2, h1 / 2
     }
+
+    delete(pixels1)
+    delete(pixels2)
 
     return
 }
@@ -176,14 +231,17 @@ load_texture :: proc(
 ALBEDO_TEXTURE_CACHE: map[string]u32
 TRANSPARENCY_TEXTURE_CACHE: map[string]u32
 
-send_material_to_gpu :: proc(mat: ^Material_Data) -> (m: Material_Gpu, error: Maybe(string)) {
+send_material_to_gpu :: proc(
+    mat: ^Material_Data,
+    gamma_correction: bool = true,
+) -> (m: Material_Gpu, error: Maybe(string)) {
     if tex, present := mat.albedo_texture.?; present && tex == mat.transparency_texture {
         m.albedo_texture = ALBEDO_TEXTURE_CACHE[tex]
         if m.albedo_texture == 0 {
             m.albedo_texture = load_texture(
                 tex,
-                mipmaps = .SRGB,
-                internal_format = gl.SRGB8_ALPHA8,
+                mipmaps = gamma_correction ? .Linear : .SRGB,
+                internal_format = gamma_correction ? gl.SRGB8_ALPHA8 : gl.RGBA8,
                 components = 4,
             ) or_return
             ALBEDO_TEXTURE_CACHE[tex] = m.albedo_texture
@@ -195,8 +253,8 @@ send_material_to_gpu :: proc(mat: ^Material_Data) -> (m: Material_Gpu, error: Ma
             if m.albedo_texture == 0 {
                 m.albedo_texture = load_texture(
                     tex,
-                    mipmaps = .SRGB,
-                    internal_format = gl.SRGB8,
+                    mipmaps = gamma_correction ? .Linear : .SRGB,
+                    internal_format = gamma_correction ? gl.SRGB8 : gl.RGB8,
                     components = 3,
                 ) or_return
                 ALBEDO_TEXTURE_CACHE[tex] = m.albedo_texture
@@ -208,7 +266,7 @@ send_material_to_gpu :: proc(mat: ^Material_Data) -> (m: Material_Gpu, error: Ma
             if m.transparency_texture == 0 {
                 m.transparency_texture = load_texture(
                     tex,
-                    mipmaps = .Linear,
+                    mipmaps = .SRGB,
                     components = 1,
                 ) or_return
                 TRANSPARENCY_TEXTURE_CACHE[tex] = m.transparency_texture
@@ -231,6 +289,20 @@ prepare_object_shader_program :: proc(program: u32, uniforms: ^Uniforms) {
     gl.Uniform1i(uniforms.albedo_tex, TEXTURE_UNIT_ALBEDO)
     gl.Uniform1f(uniforms.shadow_bias, SHADOW_BIAS)
     gl.Uniform1i(uniforms.transparency_tex, TRANSPARENCY_TEXTURE_UNIT)
+    tone_mapping: i32 = 0
+    switch config.tone_mapping {
+        case .None:
+            tone_mapping = 0
+        case .Reinhard:
+            tone_mapping = 1
+        case .Arctan:
+            tone_mapping = 2
+        case .ACES:
+            tone_mapping = 3
+        case .Uncharted2:
+            tone_mapping = 4
+    }
+    gl.Uniform1i(uniforms.tone_mapping, tone_mapping)
 }
 
 bind_material :: proc(mat: Material_Gpu, uniforms: ^Uniforms) {
@@ -272,8 +344,10 @@ CUBEMAP_FACE_ORIENTATIONS := [6][2][3]f32{
     {{0, 0, -1}, {0, -1, 0}},
 }
 
-SUN_SHADOW_MAP_SIZE :: 2048
-POINT_SHADOW_MAP_SIZE :: 1024
+SUN_SHADOW_MAP_SIZE :: 1024
+POINT_SHADOW_MAP_SIZE :: 512
+
+MAX_POINT_LIGHTS :: 8
 
 Lights :: struct {
     ambient: [3]f32,
@@ -285,12 +359,13 @@ Lights :: struct {
     sun_shadow_rbo_depth: u32,
     cached_sun_transform: matrix[4, 4]f32,
 
-    point_position: [3]f32,
-    point_color: [3]f32,
-    point_attenuation: [3]f32,
-    point_shadow_map: u32,
-    point_shadow_depth: u32,
-    point_shadow_fbos: [6]u32,
+    point_light_number: i32,
+    point_position: [MAX_POINT_LIGHTS][3]f32,
+    point_color: [MAX_POINT_LIGHTS][3]f32,
+    point_attenuation: [MAX_POINT_LIGHTS][3]f32,
+    point_zero_shadow_map: u32,
+    point_zero_shadow_depth: u32,
+    point_zero_shadow_fbos: [6]u32,
     cached_point_transform: matrix[4, 4]f32,
     near: f32,
     far: f32,
@@ -310,24 +385,33 @@ init_lights :: proc(lights: ^Lights) {
     gl.FramebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, lights.sun_shadow_map, 0)
     gl.FramebufferRenderbuffer(gl.DRAW_FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, lights.sun_shadow_rbo_depth)
 
-    gl.GenTextures(1, &lights.point_shadow_map)
-    gl.BindTexture(gl.TEXTURE_CUBE_MAP, lights.point_shadow_map)
+    gl.GenTextures(1, &lights.point_zero_shadow_map)
+    gl.BindTexture(gl.TEXTURE_CUBE_MAP, lights.point_zero_shadow_map)
     gl.TexParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
     gl.TexParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
     for side in CUBEMAP_SIDES {
         gl.TexImage2D(side, 0, gl.RG32F, POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE, 0, gl.RGBA, gl.FLOAT, nil)
     }
 
-    gl.GenRenderbuffers(1, &lights.point_shadow_depth)
-    gl.BindRenderbuffer(gl.RENDERBUFFER, lights.point_shadow_depth)
+    gl.GenRenderbuffers(1, &lights.point_zero_shadow_depth)
+    gl.BindRenderbuffer(gl.RENDERBUFFER, lights.point_zero_shadow_depth)
     gl.RenderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE)
 
-    gl.GenFramebuffers(6, raw_data(lights.point_shadow_fbos[:]))
+    gl.GenFramebuffers(6, raw_data(lights.point_zero_shadow_fbos[:]))
     for i in 0..<6 {
-        gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, lights.point_shadow_fbos[i])
-        gl.FramebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, CUBEMAP_SIDES[i], lights.point_shadow_map, 0)
-        gl.FramebufferRenderbuffer(gl.DRAW_FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, lights.point_shadow_depth)
+        gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, lights.point_zero_shadow_fbos[i])
+        gl.FramebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, CUBEMAP_SIDES[i], lights.point_zero_shadow_map, 0)
+        gl.FramebufferRenderbuffer(gl.DRAW_FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, lights.point_zero_shadow_depth)
     }
+}
+
+lights_push_point :: proc(lights: ^Lights, position, color, attenuation: [3]f32) {
+    assert(lights.point_light_number < MAX_POINT_LIGHTS)
+
+    lights.point_position[lights.point_light_number] = position
+    lights.point_color[lights.point_light_number] = color
+    lights.point_attenuation[lights.point_light_number] = attenuation
+    lights.point_light_number += 1
 }
 
 bind_shadow_map :: proc(lights: ^Lights, uniforms: ^Uniforms, i: int, scene_aabb: AABB) {
@@ -364,15 +448,15 @@ bind_shadow_map :: proc(lights: ^Lights, uniforms: ^Uniforms, i: int, scene_aabb
 
         gl.Viewport(0, 0, SUN_SHADOW_MAP_SIZE, SUN_SHADOW_MAP_SIZE)
         gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, lights.sun_shadow_fbo)
-    } else {
+    } else if config.point_light_zero_shadow && lights.point_light_number > 0 {
         i := i - 1
         side := CUBEMAP_SIDES[i]
 
         transform := linalg.matrix4_perspective_f32(
             math.PI / 2, 1, lights.near, lights.far,
         ) * linalg.matrix4_look_at_f32(
-            lights.point_position,
-            lights.point_position + CUBEMAP_FACE_ORIENTATIONS[i][0],
+            lights.point_position[0],
+            lights.point_position[0] + CUBEMAP_FACE_ORIENTATIONS[i][0],
             CUBEMAP_FACE_ORIENTATIONS[i][1],
         )
         lights.cached_point_transform = transform
@@ -380,10 +464,10 @@ bind_shadow_map :: proc(lights: ^Lights, uniforms: ^Uniforms, i: int, scene_aabb
         flat_transform := linalg.matrix_flatten(transform)
         gl.UniformMatrix4fv(uniforms.transform, 1, false, raw_data(flat_transform[:]))
         gl.Uniform1i(uniforms.is_point, 1)
-        gl.Uniform3fv(uniforms.point_position, 1, raw_data(lights.point_position[:]))
+        gl.Uniform3fv(uniforms.point_position, 1, &lights.point_position[0][0])
 
         gl.Viewport(0, 0, POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE)
-        gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, lights.point_shadow_fbos[i])
+        gl.BindFramebuffer(gl.DRAW_FRAMEBUFFER, lights.point_zero_shadow_fbos[i])
     }
 }
 
@@ -395,11 +479,11 @@ bind_lights :: proc(lights: Lights, uniforms: ^Uniforms) {
     gl.Uniform3fv(uniforms.sun_color, 1, raw_data(lights.sun_color[:]))
     gl.UniformMatrix4fv(uniforms.sun_transform, 1, false, &lights.cached_sun_transform[0, 0])
 
-    gl.Uniform3fv(uniforms.point_position, 1, raw_data(lights.point_position[:]))
-    gl.Uniform3fv(uniforms.point_color, 1, raw_data(lights.point_color[:]))
-    gl.Uniform3fv(uniforms.point_attenuation, 1, raw_data(lights.point_attenuation[:]))
-    gl.Uniform1f(uniforms.point_near, lights.near)
-    gl.Uniform1f(uniforms.point_far, lights.far)
+    n := lights.point_light_number
+    gl.Uniform1i(uniforms.point_light_count, n)
+    gl.Uniform3fv(uniforms.point_position, n, &lights.point_position[0][0])
+    gl.Uniform3fv(uniforms.point_color, n, &lights.point_color[0][0])
+    gl.Uniform3fv(uniforms.point_attenuation, n, &lights.point_attenuation[0][0])
 
     gl.ActiveTexture(gl.TEXTURE0 + SUN_SHADOW_TEXTURE_UNIT)
     gl.BindTexture(gl.TEXTURE_2D, lights.sun_shadow_map)
@@ -408,10 +492,11 @@ bind_lights :: proc(lights: Lights, uniforms: ^Uniforms) {
     gl.Uniform1i(uniforms.sun_shadow_map, SUN_SHADOW_TEXTURE_UNIT)
 
     gl.ActiveTexture(gl.TEXTURE0 + POINT_SHADOW_TEXTURE_UNIT)
-    gl.BindTexture(gl.TEXTURE_CUBE_MAP, lights.point_shadow_map)
+    gl.BindTexture(gl.TEXTURE_CUBE_MAP, lights.point_zero_shadow_map)
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-    gl.Uniform1i(uniforms.point_shadow_map, POINT_SHADOW_TEXTURE_UNIT)
+    gl.Uniform1i(uniforms.point_zero_has_shadow, config.point_light_zero_shadow ? 1 : 0)
+    gl.Uniform1i(uniforms.point_zero_shadow_map, POINT_SHADOW_TEXTURE_UNIT)
 }
 
 bind_object :: proc(obj: Object_Gpu, uniforms: ^Uniforms) {
@@ -670,6 +755,8 @@ application :: proc() -> Maybe(string) {
     path_to_obj := os.args[1]
     log("Loading scene from %s", path_to_obj)
 
+    gl.PixelStorei(gl.UNPACK_ALIGNMENT, 1)
+
     obj_data, obj_reading_error := read_obj_file(path_to_obj)
     if obj_reading_error != nil {
         return obj_reading_error
@@ -687,7 +774,14 @@ application :: proc() -> Maybe(string) {
     for &object, i in objects do gpu_objects[i] = send_object_to_gpu(&object)
 
     gpu_materials := make([]Material_Gpu, len(materials))
+    gpu_materials_not_gamma_corrected := make([]Material_Gpu, len(materials))
+
+    clear(&ALBEDO_TEXTURE_CACHE)
     for &mat, i in materials do gpu_materials[i] = send_material_to_gpu(&mat) or_return
+
+    clear(&ALBEDO_TEXTURE_CACHE)
+    for &mat, i in materials do gpu_materials_not_gamma_corrected[i] =
+        send_material_to_gpu(&mat, gamma_correction = false) or_return
 
     destroy_objects(objects)
     destroy_materials(materials)
@@ -773,16 +867,16 @@ application :: proc() -> Maybe(string) {
     camera := compute_camera(camera_controls, dimensions)
 
     lights := Lights{
-        ambient = {0.3, 0.3, 0.3},
+        ambient = {0.1, 0.1, 0.1},
         sun_direction = linalg.normalize([3]f32{0.5, 0.5, 0.5}),
         sun_color = {1, 1, 0.8},
-        point_position = {2, 3, 0},
-        point_color = {5, 0, 5},
-        point_attenuation = [3]f32{1, 0, 1000.0 / sqr(aabb_diagonal(scene_aabb))},
+        point_light_number = 0,
         near = 0.1,
         far = aabb_diagonal(scene_aabb) * 1.5,
     }
     init_lights(&lights)
+
+    point_light_attenuation := [3]f32{1, 0, 1000.0 / sqr(aabb_diagonal(scene_aabb))}
 
     speed: f32 = linalg.length(scene_aabb.max - scene_aabb.min) * 0.1
     SENSITIVITY :: 0.01
@@ -828,6 +922,10 @@ application :: proc() -> Maybe(string) {
                             inspector_selection_up()
                         case .DOWN:
                             inspector_selection_down()
+                        case .LEFT:
+                            inspector_action(-1)
+                        case .RIGHT:
+                            inspector_action(1)
                         case .KP_ENTER:
                             fallthrough
                         case .RETURN:
@@ -888,13 +986,36 @@ application :: proc() -> Maybe(string) {
             linalg.normalize([3]f32{0.2, 0.5, 0.2}),
         )
 
+        if config.regenerate_lights {
+            config.regenerate_lights = false
+            lights.point_light_number = 0
+            rand.reset(frame)
+            for i in 0..<MAX_POINT_LIGHTS {
+                x := rand.float32_uniform(scene_aabb.min.x, scene_aabb.max.x)
+                y := rand.float32_uniform(scene_aabb.min.y, scene_aabb.max.y)
+                z := rand.float32_uniform(scene_aabb.min.z, scene_aabb.max.z)
+                r := rand.float32_uniform(0, 15)
+                g := rand.float32_uniform(0, 15)
+                b := rand.float32_uniform(0, 15)
+                lights_push_point(&lights, {x, y, z}, {r, g, b}, point_light_attenuation)
+            }
+        }
+
         scene_size := aabb_diagonal(scene_aabb)
-        if move_camera && !config.paused {
-            lights.point_position = camera.position + 
+        if config.move_light_zero_around && !config.paused && lights.point_light_number > 0 {
+            lights.point_position[0] = camera.position + 
                 [3]f32{math.sin(time * 0.5), math.sin(time * 0.4), math.sin(time * 0.3)} * scene_size * 0.03
-        } else if button_down[.L] {
-            lights.point_position = camera.position
-        } 
+        }
+
+        if config.teleport_light_zero_to_camera {
+            config.teleport_light_zero_to_camera = false
+            lights.point_position[0] = camera.position
+        }
+
+        if config.teleport_light_one_to_camera {
+            config.teleport_light_one_to_camera = false
+            lights.point_position[1] = camera.position
+        }
 
         ///////////////////////////////////
 
@@ -928,11 +1049,21 @@ application :: proc() -> Maybe(string) {
         gl.ClearColor(0.7, 0.8, 1.0, 0.0)
         gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
+        if config.srgb_framebuffer {
+            gl.Enable(gl.FRAMEBUFFER_SRGB)
+        } else {
+            gl.Disable(gl.FRAMEBUFFER_SRGB)
+        }
+
         bind_lights(lights, &object_program_uniforms)
         bind_camera(camera, &object_program_uniforms)
 
         for object in gpu_objects {
-            bind_material(gpu_materials[object.material_id], &object_program_uniforms)
+            material := gpu_materials[object.material_id]
+            if !config.gamma_correction {
+                material = gpu_materials_not_gamma_corrected[object.material_id]
+            }
+            bind_material(material, &object_program_uniforms)
             bind_object(object, &object_program_uniforms)
 
             gl.DrawElements(gl.TRIANGLES, object.vertex_count, gl.UNSIGNED_INT, nil)
